@@ -7,7 +7,7 @@ Bare Metal OS is a small operating system written in x86-64 assembly and designe
 **Key features**
 
 - Fast direct kernel boot in QEMU/KVM, plus ISO boot on BIOS and UEFI.
-- GPT partition inspection and volume mounting, with writable FAT32, ext2, and a built-in RAM filesystem.
+- GPT partition inspection and volume mounting, with writable ext2, FAT32, and a built-in RAM filesystem.
 - Browse multiple mounted volumes with `cd` and `ls`, read files with `cat`, and copy them between volumes with `cp`.
 - Multicore startup and tools to inspect CPUs, memory, and PCI devices.
 - IPv4 networking over virtio-net or e1000, with ARP, UDP, `ping`, DHCP, and DNS lookups.
@@ -20,7 +20,7 @@ Download the latest release from [GitHub Releases](https://github.com/melroy89/b
 - `baremetal-os.iso` boots as a CD/DVD image with BIOS or UEFI firmware.
 - `SHA256SUMS` lets you verify the downloads.
 
-![Bare Metal OS 1.1.0 running in QEMU/KVM, showing console help, CPU details, and page counts](assets/baremetal-os.png)
+![Bare Metal OS running in QEMU/KVM, showing console help, CPU details, and page counts](assets/baremetal-os.png)
 
 ## Quick start
 
@@ -79,7 +79,7 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 ## Documentation
 
 - [Console commands and RAM files](docs/console.md)
-- [IDE storage, GPT, FAT32, and ext2](docs/storage.md)
+- [IDE storage, GPT, ext2, and FAT32](docs/storage.md)
 - [IPv4 setup and Ethernet commands](docs/networking.md)
 - [Run with libvirt or Proxmox VE](docs/virtualization.md)
 
