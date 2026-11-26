@@ -5,7 +5,9 @@ default rel
 extern console_write
 extern console_write_cstr
 extern console_putc
-extern ramfs_write
+%include "os_constants.inc"
+
+extern vfs_write
 
 section .text
 global command_echo
@@ -91,7 +93,7 @@ command_echo:
 .check_target:
     mov     al, [rcx]
     test    al, al
-    jz      ramfs_write
+    jz      .write
     cmp     al, '>'
     je      .usage
     cmp     al, '"'
@@ -99,9 +101,25 @@ command_echo:
     inc     rcx
     jmp     .check_target
 
+.write:
+    cmp     rdx, LINE_BUF_SIZE
+    jae     .usage
+    mov     r8, rdi
+    lea     rdi, [rel output_bytes]
+    mov     rcx, rdx
+    rep     movsb
+    mov     byte [rdi], 10
+    inc     rdx
+    mov     rdi, r8
+    lea     rsi, [rel output_bytes]
+    jmp     vfs_write
+
 .usage:
     lea     rdi, [rel echo_usage]
     jmp     console_write_cstr
 
 section .rodata
 echo_usage: db "Usage: echo [TEXT] [> FILE]", 10, 0
+
+section .bss
+output_bytes: resb LINE_BUF_SIZE

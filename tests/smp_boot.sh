@@ -91,7 +91,7 @@ check_lost_ping() {
 check_crc_worker() {
     local deadline result
     expect_serial 'baremetal> '
-    printf 'echo 123456789 > test.txt\r' >&"$serial_write"
+    printf 'echo 123456789 > /ram/test.txt\r' >&"$serial_write"
     expect_serial 'baremetal> '
     printf 'crc32 test.txt\r' >&"$serial_write"
     expect_serial $'\r?\nE0117756\r?\nbaremetal> '
@@ -104,7 +104,7 @@ check_crc_worker() {
     expect_serial $'\r?\nE0117757\r?\nbaremetal> '
     check_ping_result 'replied' 3
 
-    printf 'echo replacement > test.txt\r' >&"$serial_write"
+    printf 'echo replacement > /ram/test.txt\r' >&"$serial_write"
     expect_serial 'baremetal> '
     printf 'crc32 test.txt\r' >&"$serial_write"
     expect_serial $'\r?\nA48A7BE9\r?\nbaremetal> '

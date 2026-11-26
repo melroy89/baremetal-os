@@ -9,13 +9,13 @@ extern block_read
 extern block_count
 extern block_model
 extern command_gpt
-extern fat_mount
-extern fat_list
-extern fat_cat
-extern fat_put
-extern fat_check
-extern fat_repair
-extern fat_unmount
+extern disk_mount_default
+extern disk_ls_default
+extern disk_cat_default
+extern disk_put_default
+extern disk_check_volume
+extern disk_repair_volume
+extern disk_unmount_default
 extern crc32_buffer
 extern console_write_cstr
 extern console_putc
@@ -62,8 +62,11 @@ command_disk:
     xor     eax, eax
     cmp     byte [r13], 0
     setne   al
+    cmp     qword [rbx + 16], 2        ; Optional argument
+    je      .dispatch
     cmp     rax, [rbx + 16]
     jne     .usage
+.dispatch:
     mov     rax, [rbx + 8]
     mov     rdi, r13
     pop     r13
@@ -159,7 +162,7 @@ check_name:     db "check", 0
 repair_name:    db "repair", 0
 unmount_name:   db "unmount", 0
 disk_usage:     db "Usage: disk info | crc32 LBA | gpt | mount N | ls | cat NAME | put RAMFILE NAME", 10
-                db "       disk check | repair | unmount", 10, 0
+                db "       disk check [PATH] | repair [PATH] | unmount", 10, 0
 invalid_lba:    db "Invalid decimal LBA.", 10, 0
 
 align 8
@@ -167,13 +170,13 @@ operations:
     dq info_name, disk_info, 0
     dq crc_name, disk_crc, 1
     dq gpt_name, command_gpt, 0
-    dq mount_name, fat_mount, 1
-    dq list_name, fat_list, 0
-    dq cat_name, fat_cat, 1
-    dq put_name, fat_put, 1
-    dq check_name, fat_check, 0
-    dq repair_name, fat_repair, 0
-    dq unmount_name, fat_unmount, 0
+    dq mount_name, disk_mount_default, 1
+    dq list_name, disk_ls_default, 0
+    dq cat_name, disk_cat_default, 1
+    dq put_name, disk_put_default, 1
+    dq check_name, disk_check_volume, 2
+    dq repair_name, disk_repair_volume, 2
+    dq unmount_name, disk_unmount_default, 0
     dq 0
 model_label:    db "ATA disk: ", 0
 geometry_label: db 10, "Logical sector size: 512 bytes", 10, "Sectors: ", 0

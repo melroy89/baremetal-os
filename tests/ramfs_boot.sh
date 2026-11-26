@@ -4,7 +4,34 @@ export LC_ALL=C
 
 source tests/qemu_serial.sh
 
+enter_ram() {
+    printf 'cd /ram\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+}
+
+check_root() {
+    printf 'pwd\r' >&"$serial_write"
+    expect_serial $'\r?\n/\r?\nbaremetal> '
+}
+
 check_no_archive() {
+    expect_serial 'baremetal> '
+    check_root
+    printf 'ls\r' >&"$serial_write"
+    expect_serial $'\r?\n/ram\r?\nbaremetal> '
+    printf 'echo invalid > note.txt\r' >&"$serial_write"
+    expect_serial 'Expected a file path, found a directory\.'
+    expect_serial 'baremetal> '
+    enter_ram
+    printf 'touch\r' >&"$serial_write"
+    expect_serial $'Usage: touch PATH\r?\nbaremetal> '
+    printf 'touch empty file.txt\r' >&"$serial_write"
+    expect_serial $'touch empty file\\.txt\r?\nbaremetal> '
+    printf 'cat empty file.txt\r' >&"$serial_write"
+    expect_serial $'cat empty file\\.txt\r?\nbaremetal> '
+    printf 'ls\r' >&"$serial_write"
+    expect_serial $'\r?\nempty file\\.txt\r?\nbaremetal> '
+    printf 'rm empty file.txt\r' >&"$serial_write"
     expect_serial 'baremetal> '
     printf 'ls\r' >&"$serial_write"
     expect_serial 'No RAM filesystem loaded\.'
@@ -36,7 +63,7 @@ check_no_archive() {
     expect_serial 'Usage: echo'
     expect_serial 'baremetal> '
     printf 'echo invalid > sub/note.txt\r' >&"$serial_write"
-    expect_serial 'Invalid RAM filename\.'
+    expect_serial 'Directory not found\.'
     expect_serial 'baremetal> '
     printf 'cat note.txt\r' >&"$serial_write"
     expect_serial $'\r?\n  3 > 2  \r?\nbaremetal> '
@@ -49,6 +76,8 @@ check_no_archive() {
     expect_serial $'ls\r?\nblank\\.txt\r?\nbaremetal> '
     printf 'reboot\r' >&"$serial_write"
     expect_serial 'baremetal> '
+    check_root
+    enter_ram
     printf 'ls\r' >&"$serial_write"
     expect_serial 'No RAM filesystem loaded\.'
     expect_serial 'baremetal> '
@@ -57,6 +86,8 @@ check_no_archive() {
 check_archive() {
     local command_label padded_label
     expect_serial 'baremetal> '
+    check_root
+    enter_ram
     printf 'ls\r' >&"$serial_write"
     expect_serial $'hello\\.txt\r?\n'
     expect_serial $'two words\\.txt\r?\n'
@@ -87,18 +118,24 @@ check_archive() {
     expect_serial 'baremetal> '
     printf 'echo updated > hello.txt\r' >&"$serial_write"
     expect_serial 'baremetal> '
+    printf 'touch hello.txt\r' >&"$serial_write"
+    expect_serial $'touch hello\\.txt\r?\nbaremetal> '
     printf 'ls\r' >&"$serial_write"
     expect_serial $'ls\r?\ntwo words\\.txt\r?\nempty\\.txt\r?\nhello\\.txt\r?\nbaremetal> '
     printf 'cat hello.txt\r' >&"$serial_write"
     expect_serial $'\r?\nupdated\r?\nbaremetal> '
     printf 'rm hello.txt\r' >&"$serial_write"
     expect_serial 'baremetal> '
+    printf 'touch hello.txt\r' >&"$serial_write"
+    expect_serial $'touch hello\\.txt\r?\nbaremetal> '
     printf 'cat hello.txt\r' >&"$serial_write"
     expect_serial $'\r?\nHello from RAM\r?\nbaremetal> '
 
     printf 'help\r' >&"$serial_write"
-    for command_label in help info cpu 'cpu ping' mem memmap lspci disk net ls 'cat FILE' 'crc32 FILE' echo 'rm FILE' uptime log version clear reboot halt; do
+    for command_label in help info cpu 'cpu ping' mem memmap lspci disk net 'ls [PATH]' 'cd PATH' pwd mount umount 'cat FILE' 'crc32 FILE' echo 'touch PATH' 'rm FILE' uptime log version clear reboot halt; do
         printf -v padded_label '%-11s' "$command_label"
+        padded_label=${padded_label//\[/\\[}
+        padded_label=${padded_label//\]/\\]}
         expect_serial $'\r?\n'"$padded_label"'[^[:space:]]'
     done
     expect_serial 'baremetal> '
@@ -106,6 +143,7 @@ check_archive() {
 
 check_crc_archive() {
     expect_serial 'baremetal> '
+    enter_ram
     printf 'crc32 digits\r' >&"$serial_write"
     expect_serial $'\r?\nCBF43926\r?\nbaremetal> '
     printf 'crc32 binary\r' >&"$serial_write"
@@ -130,6 +168,7 @@ check_crc_archive() {
 
 check_overlong_commands() {
     expect_serial 'baremetal> '
+    enter_ram
     printf 'echo original > note\r' >&"$serial_write"
     expect_serial 'baremetal> '
     printf 'echo separate > note.txt\r' >&"$serial_write"
@@ -156,6 +195,7 @@ check_overlong_commands() {
 
 check_duplicate_archive() {
     expect_serial 'baremetal> '
+    enter_ram
     printf 'cat hello.txt\r' >&"$serial_write"
     expect_serial $'\r?\nLatest in archive\r?\nbaremetal> '
     printf 'ls\r' >&"$serial_write"
@@ -172,6 +212,7 @@ check_duplicate_archive() {
 
 check_one_page() {
     expect_serial 'baremetal> '
+    enter_ram
     printf 'echo first > note.txt\r' >&"$serial_write"
     expect_serial 'baremetal> '
     printf 'echo second > other.txt\r' >&"$serial_write"
@@ -199,6 +240,7 @@ check_one_page() {
 
 check_bad_archive() {
     expect_serial 'baremetal> '
+    enter_ram
     printf 'ls\r' >&"$serial_write"
     expect_serial $'ls\r?\nInvalid RAM filesystem archive\\.'
     expect_serial 'baremetal> '
@@ -210,6 +252,7 @@ check_bad_archive() {
 check_index_pages() {
     local n name
     expect_serial 'baremetal> '
+    enter_ram
     printf 'ls\r' >&"$serial_write"
     expect_serial $'ls\r?\n'
     for ((n = 1; n <= 350; n++)); do
@@ -224,6 +267,7 @@ check_index_pages() {
 check_failed_index() {
     local error=$1
     expect_serial 'baremetal> '
+    enter_ram
     printf 'ls\r' >&"$serial_write"
     expect_serial $'ls\r?\n'"$error"$'\r?\nbaremetal> '
     printf 'cat file-001\r' >&"$serial_write"

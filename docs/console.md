@@ -4,21 +4,22 @@ Type `help` at the `baremetal>` prompt for the full command list.
 
 ## System and session
 
-| Command       | Action                                                        |
-| ------------- | ------------------------------------------------------------- |
-| `info`        | Show started CPUs and usable RAM.                             |
-| `cpu`         | Show the boot CPU model and capabilities.                     |
-| `cpu ping`    | Check which secondary CPUs respond.                           |
-| `mem`         | Show used and free 4 KiB pages.                               |
-| `memmap`      | Show the Multiboot memory map.                                |
-| `lspci`       | List PCI addresses, IDs, and classes.                         |
-| `lspci --all` | Probe every PCI function, including slots without function 0. |
-| `uptime`      | Show time since boot.                                         |
-| `log`         | Show boot milestones.                                         |
-| `version`     | Show the kernel version and build ID.                         |
-| `clear`       | Clear the console.                                            |
-| `reboot`      | Restart the guest.                                            |
-| `halt`        | Power off the guest.                                          |
+| Command                | Action                                                        |
+| ---------------------- | ------------------------------------------------------------- |
+| `help`                 | Show console commands.                                        |
+| `info`                 | Show started CPUs and usable RAM.                             |
+| `cpu`                  | Show the boot CPU model and capabilities.                     |
+| `cpu ping`             | Check which secondary CPUs respond.                           |
+| `mem`                  | Show used and free 4 KiB pages.                               |
+| `memmap`               | Show the Multiboot memory map.                                |
+| `lspci`                | List PCI addresses, IDs, and classes.                         |
+| `lspci --all`          | Probe every PCI function, including slots without function 0. |
+| `uptime`               | Show time since boot.                                         |
+| `log`                  | Show boot milestones.                                         |
+| `version`              | Show the kernel version and build ID.                         |
+| `clear`                | Clear the console.                                            |
+| `reboot`               | Restart the guest.                                            |
+| `halt`, `quit`, `exit` | Power off the guest.                                          |
 
 ## IDE storage
 
@@ -32,18 +33,31 @@ Use `net info` to check the link, `net recv` to read a frame, and `net send` to 
 
 For more info read: [Ethernet setup and frame commands](networking.md).
 
-## RAM files
+## Files and directories
 
-RAM disks are not persistent. Use `ls` to list files, `cat FILE` to read one, and `crc32 FILE` to print its checksum.
+The console starts at `/`. Use `ls` there to see mounted volumes, or `cd /ram` to work with temporary files. Relative paths start in the current directory.
+
+| Command              | Action                                               |
+| -------------------- | ---------------------------------------------------- |
+| `ls [PATH]`          | List the current directory or `PATH`.                |
+| `cd PATH`            | Change directory. Use `cd ..` to go up.              |
+| `pwd`                | Show the current directory.                          |
+| `cat PATH`           | Print a file.                                        |
+| `echo [TEXT]`        | Print text and a newline.                            |
+| `echo [TEXT] > PATH` | Write text and a newline to a file.                  |
+| `touch PATH`         | Create an empty file. Existing files stay unchanged. |
+| `rm PATH`            | Remove a writable file.                              |
+| `crc32 FILE`         | Checksum a file in `/ram` from anywhere.             |
 
 ```text
+cd /ram
 echo "3 > 2" > comparison.txt
 cat comparison.txt
 crc32 comparison.txt
 rm comparison.txt
 ```
 
-Quotes around the text are optional.
+Double quotes let you include a literal `>` in the text. Files in `/ram` disappear on reboot.
 
 ### Optional boot archive
 

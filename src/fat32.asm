@@ -1,18 +1,19 @@
-; Root-level FAT32 file access for a single GPT partition.
+; FAT32 operations for the volume selected in rbp.
 bits 64
 default rel
 
 %include "os_constants.inc"
+%include "fat32_mount.inc"
 
 %define FAT_MIN_CLUSTERS 65525
 %define FAT_LINK_MASK    0x0FFFFFFF
 %define FAT_END          0x0FFFFFF8
 %define FAT_END_MARKER   0x0FFFFFFF
 %define FAT_ENTRY_SIZE   32
-%define FAT_DIR_LIMIT    256
-%define FAT_OWNER_DEPTH  16
+%define FAT_ATTR_READ_ONLY 0x01
 
 extern block_read
+extern vfs_mount_overlap
 extern block_write
 extern block_flush
 extern gpt_load
@@ -30,10 +31,15 @@ global fat_list
 global fat_cat
 global fat_put
 global fat_unmount
+global fat_write
+global fat_touch
+global fat_rm
+global fat_find_dir
+global fat_validate_root
 
 fat_mount:
     push    rbx
-    cmp     byte [rel mounted], 0
+    cmp     byte [rbp + fat_volume.mounted], 0
     jne     .busy
     call    parse_lba
     jc      .partition
@@ -47,7 +53,16 @@ fat_mount:
     call    gpt_partition
     test    rax, rax
     jz      .partition
-    mov     [rel volume_base], rax
+    mov     [rbp + fat_volume.volume_base], rax
+    mov     [rbp + fat_volume.partition_last], rdx
+    mov     rdi, rax
+    mov     rsi, rdx
+    mov     edx, [rbp + fat_volume.device]
+    call    vfs_mount_overlap
+    test    eax, eax
+    jnz     .overlap
+    mov     rax, [rbp + fat_volume.volume_base]
+    mov     rdx, [rbp + fat_volume.partition_last]
     sub     rdx, rax
     inc     rdx
     mov     rbx, rdx
@@ -78,53 +93,53 @@ fat_mount:
     lea     eax, [rcx - 1]
     test    eax, ecx
     jnz     .invalid
-    mov     [rel sectors_per_cluster], ecx
+    mov     [rbp + fat_volume.sectors_per_cluster], ecx
     movzx   eax, word [rdi + 14]
     test    eax, eax
     jz      .invalid
-    mov     [rel reserved_sectors], eax
+    mov     [rbp + fat_volume.reserved_sectors], eax
     mov     eax, [rdi + 32]
     cmp     rax, rbx
     ja      .invalid
-    mov     [rel total_sectors], rax
+    mov     [rbp + fat_volume.total_sectors], rax
     movzx   ecx, byte [rdi + 16]
     dec     ecx
     cmp     ecx, 1
     ja      .invalid
     inc     ecx
-    mov     [rel fat_copies], ecx
+    mov     [rbp + fat_volume.fat_copies], ecx
     mov     eax, [rdi + 36]
     test    eax, eax
     jz      .invalid
-    mov     [rel sectors_per_fat], eax
+    mov     [rbp + fat_volume.sectors_per_fat], eax
     imul    rax, rcx
-    mov     ecx, [rel reserved_sectors]
+    mov     ecx, [rbp + fat_volume.reserved_sectors]
     add     rax, rcx
-    cmp     rax, [rel total_sectors]
+    cmp     rax, [rbp + fat_volume.total_sectors]
     jae     .invalid
-    mov     [rel data_start], rax
+    mov     [rbp + fat_volume.data_start], rax
     mov     rcx, rax
-    mov     rax, [rel total_sectors]
+    mov     rax, [rbp + fat_volume.total_sectors]
     sub     rax, rcx
     xor     edx, edx
-    div     dword [rel sectors_per_cluster]
+    div     dword [rbp + fat_volume.sectors_per_cluster]
     cmp     eax, FAT_MIN_CLUSTERS
     jb      .invalid
     inc     eax
     cmp     eax, 0x0FFFFFF0
     jae     .invalid
-    mov     [rel last_cluster], eax
+    mov     [rbp + fat_volume.last_cluster], eax
     shr     eax, 7
-    cmp     eax, [rel sectors_per_fat]
+    cmp     eax, [rbp + fat_volume.sectors_per_fat]
     jae     .invalid
     mov     eax, [rdi + 44]
     cmp     eax, 2
     jb      .invalid
-    cmp     eax, [rel last_cluster]
+    cmp     eax, [rbp + fat_volume.last_cluster]
     ja      .invalid
-    mov     [rel root_cluster], eax
+    mov     [rbp + fat_volume.root_cluster], eax
     movzx   eax, word [rdi + 48]
-    mov     [rel fsinfo_lba], eax
+    mov     [rbp + fat_volume.fsinfo_lba], eax
     movzx   ecx, word [rdi + 50]
     cmp     ecx, 0xFFFF
     je      .no_backup_info
@@ -133,14 +148,17 @@ fat_mount:
 .no_backup_info:
     xor     ecx, ecx
 .store_backup:
-    mov     [rel backup_fsinfo_lba], ecx
-    mov     byte [rel mounted], 1
-    mov     byte [rel modified], 0
-    mov     byte [rel write_blocked], 0
+    mov     [rbp + fat_volume.backup_fsinfo_lba], ecx
+    mov     byte [rbp + fat_volume.mounted], 1
+    mov     byte [rbp + fat_volume.pending_write], 0
+    mov     byte [rbp + fat_volume.write_error], 0
     lea     rdi, [rel mounted_text]
     jmp     .print
 .busy:
     lea     rax, [rel already_mounted]
+    jmp     .error
+.overlap:
+    lea     rax, [rel overlapping_mount]
     jmp     .error
 .partition:
     lea     rax, [rel missing_partition]
@@ -154,9 +172,9 @@ fat_mount:
     jmp     console_write_cstr
 
 fat_unmount:
-    cmp     byte [rel mounted], 0
+    cmp     byte [rbp + fat_volume.mounted], 0
     je      print_unmounted
-    cmp     byte [rel modified], 0
+    cmp     byte [rbp + fat_volume.pending_write], 0
     je      .clear
     sub     rsp, 8
     call    block_flush
@@ -164,37 +182,42 @@ fat_unmount:
     test    rax, rax
     jnz     print_error
 .clear:
-    mov     byte [rel mounted], 0
+    mov     byte [rbp + fat_volume.mounted], 0
     lea     rdi, [rel unmounted_text]
     jmp     console_write_cstr
 
 fat_list:
-    cmp     byte [rel mounted], 0
+    cmp     byte [rbp + fat_volume.mounted], 0
     je      print_unmounted
+    mov     esi, edi
     mov     edi, 1
     sub     rsp, 8
-    call    scan_root
+    call    scan_directory
     add     rsp, 8
     test    rax, rax
     jnz     print_error
     ret
 
 fat_cat:
-    cmp     byte [rel mounted], 0
+    cmp     byte [rbp + fat_volume.mounted], 0
     je      print_unmounted
     push    rbx
     push    r12
     push    r13
     push    r14
     push    r15
+    mov     ebx, esi
     call    short_name
     jc      .bad_name
+    mov     esi, ebx
     xor     edi, edi
-    call    scan_root
+    call    scan_directory
     test    rax, rax
     jnz     .error
     cmp     byte [rel slot_found], 0
     je      .missing
+    test    byte [rel slot_attr], 0x10
+    jnz     .is_directory
     mov     r12d, [rel slot_size]
     mov     r13d, [rel slot_cluster]
     mov     edi, r13d
@@ -211,7 +234,7 @@ fat_cat:
     test    rax, rax
     jz      .corrupt
     mov     r14, rax
-    mov     ebx, [rel sectors_per_cluster]
+    mov     ebx, [rbp + fat_volume.sectors_per_cluster]
 .sector:
     mov     rdi, r14
     call    read_sector
@@ -241,6 +264,9 @@ fat_cat:
     mov     edi, 10
     call    console_putc
     jmp     .done
+.is_directory:
+    lea     rax, [rel name_is_directory]
+    jmp     .error
 .bad_name:
     lea     rax, [rel invalid_name]
     jmp     .error
@@ -260,9 +286,9 @@ fat_cat:
     pop     rbx
     ret
 
-; edi != 0 lists files. Otherwise find name_buf and remember the first free
-; directory slot for creation. Return zero or error string.
-scan_root:
+; esi = directory cluster (zero selects the root). edi != 0 lists entries.
+; Otherwise find a unique name_buf match or the first free slot.
+scan_directory:
     push    rbx
     push    r12
     push    r13
@@ -270,16 +296,23 @@ scan_root:
     push    r15
     mov     r15d, edi
     mov     qword [rel slot_lba], 0
+    mov     dword [rel slot_dir_cluster], 0
     mov     byte [rel slot_found], 0
-    mov     r12d, [rel root_cluster]
-    mov     dword [rel dir_budget], FAT_DIR_LIMIT
+    mov     byte [rel pending_lfn], 0
+    mov     r12d, esi
+    test    r12d, r12d
+    cmovz   r12d, [rbp + fat_volume.root_cluster]
+    mov     edi, r12d
+    call    validate_directory_chain
+    test    rax, rax
+    jnz     .done
 .cluster:
     mov     edi, r12d
     call    cluster_lba
     test    rax, rax
     jz      .corrupt
     mov     r13, rax
-    mov     r14d, [rel sectors_per_cluster]
+    mov     r14d, [rbp + fat_volume.sectors_per_cluster]
 .sector:
     mov     rdi, r13
     call    read_sector
@@ -293,36 +326,59 @@ scan_root:
     je      .end_marker
     cmp     byte [rsi], 0xE5
     je      .deleted
-    test    byte [rsi + 11], 0x08      ; Skip volume labels and LFN entries.
+    cmp     byte [rsi + 11], 0x0F
+    je      .long_name
+    mov     dl, [rel pending_lfn]
+    mov     byte [rel pending_lfn], 0
+    test    byte [rsi + 11], 0x08      ; Skip volume labels.
     jnz     .advance
     test    r15d, r15d
     jnz     .list_entry
     lea     rdi, [rel name_buf]
-    mov     ecx, 11
-    repe    cmpsb
+    xor     ecx, ecx
+.compare:
+    mov     al, [rsi + rcx]
+    cmp     al, 'a'
+    jb      .compare_byte
+    cmp     al, 'z'
+    ja      .compare_byte
+    sub     al, 'a' - 'A'
+.compare_byte:
+    cmp     al, [rdi + rcx]
     jne     .advance
+    inc     ecx
+    cmp     ecx, 11
+    jb      .compare
+    cmp     byte [rel slot_found], 0
+    jne     .duplicate
+    mov     [rel slot_lfn], dl
     mov     byte [rel slot_found], 1
     mov     byte [rel slot_at_end], 0
     mov     [rel slot_lba], r13
     mov     [rel slot_offset], ebx
     lea     rsi, [rel sector_buffer]
     add     rsi, rbx
-    test    byte [rsi + 11], 0x10
-    jnz     .directory
     call    entry_cluster
     mov     [rel slot_cluster], eax
     mov     eax, [rsi + 28]
     mov     [rel slot_size], eax
     mov     al, [rsi + 11]
     mov     [rel slot_attr], al
-    jmp     .success
+    jmp     .advance
+.long_name:
+    mov     byte [rel pending_lfn], 1
+    jmp     .advance
 .list_entry:
-    test    byte [rsi + 11], 0x10
-    jnz     .advance
+    cmp     byte [rsi], '.'
+    je      .advance
     mov     rdi, rsi
     call    print_name
     jmp     .advance
 .deleted:
+    mov     al, [rel pending_lfn]
+    mov     byte [rel pending_lfn], 0
+    test    al, al
+    jnz     .advance
     cmp     qword [rel slot_lba], 0
     jne     .advance
     mov     byte [rel slot_at_end], 0
@@ -340,14 +396,21 @@ scan_root:
     test    rax, rax
     jnz     .done
     cmp     edx, FAT_END
-    jae     .success
+    jae     .chain_end
     mov     r12d, edx
-    dec     dword [rel dir_budget]
-    jnz     .cluster
-    jmp     .corrupt
+    jmp     .cluster
+.chain_end:
+    cmp     qword [rel slot_lba], 0
+    jne     .success
+    cmp     byte [rel pending_lfn], 0
+    jne     .success
+    mov     [rel slot_dir_cluster], r12d
+    jmp     .success
 .end_marker:
     cmp     qword [rel slot_lba], 0
     jne     .success
+    cmp     byte [rel pending_lfn], 0
+    jne     .success                  ; Do not attach an orphaned LFN to a new file.
     mov     byte [rel slot_at_end], 1
     mov     [rel slot_lba], r13
     mov     [rel slot_offset], ebx
@@ -359,8 +422,8 @@ scan_root:
 .corrupt:
     lea     rax, [rel invalid_chain]
     jmp     .done
-.directory:
-    lea     rax, [rel name_is_directory]
+.duplicate:
+    lea     rax, [rel duplicate_name]
 .done:
     pop     r15
     pop     r14
@@ -438,6 +501,7 @@ short_name:
     ret
 
 print_name:
+    mov     dl, [rdi + 11]
     sub     rsp, 24
     mov     rsi, rdi
     mov     rdi, rsp
@@ -462,6 +526,11 @@ print_name:
 .end_ext:
     loop    .ext
 .newline:
+    test    dl, 0x10
+    jz      .end_line
+    mov     al, '/'
+    stosb
+.end_line:
     mov     al, 10
     stosb
     mov     rsi, rdi
@@ -475,12 +544,12 @@ print_name:
 cluster_lba:
     cmp     edi, 2
     jb      .bad
-    cmp     edi, [rel last_cluster]
+    cmp     edi, [rbp + fat_volume.last_cluster]
     ja      .bad
     lea     eax, [rdi - 2]
-    mov     ecx, [rel sectors_per_cluster]
+    mov     ecx, [rbp + fat_volume.sectors_per_cluster]
     imul    rax, rcx
-    add     rax, [rel data_start]
+    add     rax, [rbp + fat_volume.data_start]
     ret
 .bad:
     xor     eax, eax
@@ -496,7 +565,7 @@ get_link:
     jz      .invalid
     mov     edi, ebx
     shr     edi, 7
-    add     edi, [rel reserved_sectors]
+    add     edi, [rbp + fat_volume.reserved_sectors]
     call    read_sector
     test    rax, rax
     jnz     .done
@@ -521,10 +590,10 @@ set_link:
     mov     ebx, edi
     and     ebx, 127
     shr     edi, 7
-    add     edi, [rel reserved_sectors]
+    add     edi, [rbp + fat_volume.reserved_sectors]
     mov     r12d, edi
     mov     r13d, esi
-    mov     r14d, [rel fat_copies]
+    mov     r14d, [rbp + fat_volume.fat_copies]
     lea     r15, [rel sector_buffer]
 .copy:
     mov     rdi, r12
@@ -539,7 +608,7 @@ set_link:
     call    write_sector
     test    rax, rax
     jnz     .done
-    mov     eax, [rel sectors_per_fat]
+    mov     eax, [rbp + fat_volume.sectors_per_fat]
     add     r12, rax
     dec     r14d
     jnz     .copy
@@ -560,10 +629,10 @@ read_fat_pair:
     call    read_sector_into
     test    rax, rax
     jnz     .done
-    cmp     dword [rel fat_copies], 2
+    cmp     dword [rbp + fat_volume.fat_copies], 2
     jne     .done
     mov     edi, ebx
-    add     edi, [rel sectors_per_fat]
+    add     edi, [rbp + fat_volume.sectors_per_fat]
     lea     rsi, [rel fat_sector_pair + BLOCK_SIZE]
     call    read_sector_into
 .done:
@@ -574,31 +643,29 @@ read_fat_pair:
 read_sector:
     lea     rsi, [rel sector_buffer]
 read_sector_into:
-    cmp     rdi, [rel total_sectors]
+    cmp     rdi, [rbp + fat_volume.total_sectors]
     jae     bad_volume_sector
-    add     rdi, [rel volume_base]
+    add     rdi, [rbp + fat_volume.volume_base]
     jmp     block_read
 write_sector:
     lea     rsi, [rel sector_buffer]
 write_sector_from:
-    cmp     rdi, [rel total_sectors]
+    cmp     rdi, [rbp + fat_volume.total_sectors]
     jae     bad_volume_sector
-    add     rdi, [rel volume_base]
+    add     rdi, [rbp + fat_volume.volume_base]
     jmp     block_write
 bad_volume_sector:
     lea     rax, [rel unsupported_volume]
     ret
 
 fat_put:
-    cmp     byte [rel mounted], 0
+    cmp     byte [rbp + fat_volume.mounted], 0
     je      print_unmounted
-    cmp     byte [rel write_blocked], 0
+    cmp     byte [rbp + fat_volume.write_error], 0
     jne     print_write_blocked
     push    rbx
     push    r12
-    push    r13
-    push    r14
-    push    r15
+    sub     rsp, 8
     mov     rbx, rdi
     xor     r12d, r12d
 .find_separator:
@@ -615,55 +682,101 @@ fat_put:
     lea     rdi, [r12 + 1]
     call    short_name
     jc      .name
+    lea     r12, [r12 + 1]
+    lea     rdi, [r12 - 1]
 .trim_source:
-    cmp     byte [r12 - 1], ' '
+    cmp     rdi, rbx
+    je      .usage
+    cmp     byte [rdi - 1], ' '
     jne     .source
-    dec     r12
+    dec     rdi
     jmp     .trim_source
 .source:
-    mov     byte [r12], 0
+    mov     byte [rdi], 0
     mov     rdi, rbx
     call    ramfs_lookup
     test    rax, rax
     jz      .missing
+    mov     rdi, r12
+    mov     rsi, rax
+    xor     ecx, ecx
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    jmp     fat_write
+.usage:
+    lea     rax, [rel put_usage]
+    jmp     .error
+.name:
+    lea     rax, [rel invalid_name]
+    jmp     .error
+.missing:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    jmp     ramfs_not_found
+.error:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    jmp     print_error
+
+; rdi = name, esi = parent cluster. Create an empty file only on a miss.
+fat_touch:
+    mov     ecx, esi
+    xor     esi, esi
+    xor     edx, edx
+    mov     r8d, 1
+    jmp     fat_store
+
+; rdi = name, rsi = bytes, rdx = count, ecx = parent cluster (zero for root).
+fat_write:
+    xor     r8d, r8d
+fat_store:
+    cmp     byte [rbp + fat_volume.write_error], 0
+    jne     print_write_blocked
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 16
+    mov     [rsp], r8d                ; Create only, with no success message.
     cmp     rdx, 0x7FFFFFFF
     ja      .large
-    mov     r12, rax
+    mov     r12, rsi
     mov     r13d, edx
-    mov     [rel new_size], edx
+    mov     ebx, ecx
+    call    short_name
+    jc      .name
+    mov     [rel new_size], r13d
     xor     edi, edi
-    call    scan_root
+    mov     esi, ebx
+    call    scan_directory
     test    rax, rax
     jnz     .error
     cmp     qword [rel slot_lba], 0
+    jne     .slot_ready
+    cmp     dword [rel slot_dir_cluster], 0
     je      .directory_full
+.slot_ready:
     mov     dword [rel old_head], 0
     cmp     byte [rel slot_found], 0
-    je      .prepare
-    test    byte [rel slot_attr], 1
-    jnz     .read_only
-    mov     eax, [rel slot_cluster]
-    mov     [rel old_head], eax
-    mov     edi, eax
-    mov     esi, [rel slot_size]
-    call    check_chain
+    je      .verify
+    cmp     dword [rsp], 0
+    jne     .touch_existing
+    call    verify_file_slot
     test    rax, rax
     jnz     .error
-    call    verify_old_chain_owner
+    mov     eax, [rel slot_cluster]
+    mov     [rel old_head], eax
+.verify:
+    call    verify_mutation_tree
     test    rax, rax
     jnz     .error
 
 .prepare:
-    call    block_flush               ; Verify flush support before any write.
-    test    rax, rax
-    jnz     .error
-    mov     byte [rel modified], 1
-    mov     edi, [rel fsinfo_lba]
-    call    invalidate_fsinfo
-    test    rax, rax
-    jnz     .write_error
-    mov     edi, [rel backup_fsinfo_lba]
-    call    invalidate_fsinfo
+    call    prepare_mutation
     test    rax, rax
     jnz     .write_error
     xor     r14d, r14d                 ; Last allocated cluster
@@ -698,7 +811,7 @@ fat_put:
     mov     edi, r15d
     call    cluster_lba
     mov     r15, rax
-    mov     ebx, [rel sectors_per_cluster]
+    mov     ebx, [rbp + fat_volume.sectors_per_cluster]
 .sector:
     lea     rdi, [rel sector_buffer]
     mov     rsi, r12
@@ -724,6 +837,14 @@ fat_put:
     jnz     .cluster
 
 .persist:
+    cmp     qword [rel slot_lba], 0
+    jne     .end_marker
+    call    extend_directory
+    test    rax, rax
+    jnz     .write_error
+    cmp     qword [rel slot_lba], 0
+    je      .no_space
+.end_marker:
     call    preserve_end_marker
     test    rax, rax
     jnz     .write_error
@@ -785,6 +906,9 @@ fat_put:
     call    block_flush
     test    rax, rax
     jnz     .write_error
+    mov     byte [rbp + fat_volume.pending_write], 0
+    cmp     dword [rsp], 0
+    jne     .done
     lea     rdi, [rel saved_text]
     jmp     .print
 
@@ -796,21 +920,16 @@ fat_put:
     call    block_flush
     test    rax, rax
     jnz     .write_error
+    mov     byte [rbp + fat_volume.pending_write], 0
     lea     rax, [rel volume_full]
     jmp     .error
 .write_error:
-    mov     byte [rel write_blocked], 1
+    mov     byte [rbp + fat_volume.write_error], 1
 .error:
     mov     rdi, rax
 .print:
     call    console_write_cstr
     jmp     .done
-.missing:
-    call    ramfs_not_found
-    jmp     .done
-.usage:
-    lea     rax, [rel put_usage]
-    jmp     .error
 .name:
     lea     rax, [rel invalid_name]
     jmp     .error
@@ -820,15 +939,192 @@ fat_put:
 .directory_full:
     lea     rax, [rel root_full]
     jmp     .error
-.read_only:
-    lea     rax, [rel file_read_only]
+.touch_existing:
+    test    byte [rel slot_attr], 0x10
+    jz      .done
+    lea     rax, [rel name_is_directory]
     jmp     .error
 .done:
+    add     rsp, 16
     pop     r15
     pop     r14
     pop     r13
     pop     r12
     pop     rbx
+    ret
+
+; rdi = name, esi = parent cluster. Return the child in edx or an error in rax.
+fat_find_dir:
+    push    rbx
+    mov     ebx, esi
+    call    short_name
+    jc      .name
+    mov     esi, ebx
+    xor     edi, edi
+    call    scan_directory
+    test    rax, rax
+    jnz     .done
+    cmp     byte [rel slot_found], 1
+    jne     .missing
+    test    byte [rel slot_attr], 0x10
+    jz      .missing
+    mov     ebx, [rel slot_cluster]
+    mov     edi, ebx
+    call    validate_directory_chain
+    mov     edx, ebx
+    jmp     .done
+.name:
+    lea     rax, [rel invalid_name]
+    jmp     .done
+.missing:
+    lea     rax, [rel directory_missing]
+    jmp     .done
+.done:
+    pop     rbx
+    ret
+
+fat_validate_root:
+    mov     edi, [rbp + fat_volume.root_cluster]
+
+; Validate each mirrored link and detect cycles with Brent's algorithm.
+validate_directory_chain:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8
+    mov     ebx, edi
+    mov     r12d, edi                 ; Cycle detection checkpoint
+    mov     r13d, 1                   ; Steps until the next checkpoint
+    mov     r14d, 1                   ; Checkpoint interval
+    mov     dword [rel cached_fat_lba], -1
+.chain:
+    cmp     ebx, 2
+    jb      .bad
+    cmp     ebx, [rbp + fat_volume.last_cluster]
+    ja      .bad
+    mov     edi, ebx
+    call    cached_fat_link
+    test    rax, rax
+    jnz     .done
+    cmp     edx, FAT_END
+    jae     .done
+    cmp     edx, r12d
+    je      .bad
+    mov     ebx, edx
+    dec     r13d
+    jnz     .chain
+    mov     r12d, edx
+    shl     r14d, 1
+    mov     r13d, r14d
+    jmp     .chain
+.bad:
+    lea     rax, [rel invalid_chain]
+.done:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; rdi = name, esi = parent cluster.
+fat_rm:
+    cmp     byte [rbp + fat_volume.write_error], 0
+    jne     print_write_blocked
+    push    rbx
+    mov     ebx, esi
+    call    short_name
+    jc      .name
+    mov     esi, ebx
+    xor     edi, edi
+    call    scan_directory
+    test    rax, rax
+    jnz     .error
+    cmp     byte [rel slot_found], 1
+    jne     .missing
+    call    verify_file_slot
+    test    rax, rax
+    jnz     .error
+    cmp     byte [rel slot_lfn], 0
+    jne     .long_name
+    call    verify_mutation_tree
+    test    rax, rax
+    jnz     .error
+    call    prepare_mutation
+    test    rax, rax
+    jnz     .write_error
+    mov     rdi, [rel slot_lba]
+    call    read_sector
+    test    rax, rax
+    jnz     .write_error
+    lea     rbx, [rel sector_buffer]
+    mov     eax, [rel slot_offset]
+    mov     byte [rbx + rax], 0xE5
+    mov     rdi, [rel slot_lba]
+    call    write_sector
+    test    rax, rax
+    jnz     .write_error
+    call    block_flush
+    test    rax, rax
+    jnz     .write_error
+    mov     edi, [rel slot_cluster]
+    test    edi, edi
+    jz      .done
+    call    free_chain
+    test    rax, rax
+    jnz     .write_error
+    call    block_flush
+    test    rax, rax
+    jnz     .write_error
+.done:
+    mov     byte [rbp + fat_volume.pending_write], 0
+    pop     rbx
+    ret
+.name:
+    lea     rax, [rel invalid_name]
+    jmp     .error
+.missing:
+    lea     rax, [rel file_missing]
+    jmp     .error
+.long_name:
+    lea     rax, [rel lfn_remove]
+    jmp     .error
+.write_error:
+    mov     byte [rbp + fat_volume.write_error], 1
+.error:
+    pop     rbx
+    jmp     print_error
+
+verify_file_slot:
+    test    byte [rel slot_attr], 0x10
+    jnz     .directory
+    test    byte [rel slot_attr], FAT_ATTR_READ_ONLY
+    jnz     .read_only
+    mov     edi, [rel slot_cluster]
+    mov     esi, [rel slot_size]
+    jmp     check_chain
+.directory:
+    lea     rax, [rel name_is_directory]
+    ret
+.read_only:
+    lea     rax, [rel file_read_only]
+    ret
+
+prepare_mutation:
+    sub     rsp, 8
+    call    block_flush
+    test    rax, rax
+    jnz     .done
+    mov     byte [rbp + fat_volume.pending_write], 1
+    mov     edi, [rbp + fat_volume.fsinfo_lba]
+    call    invalidate_fsinfo
+    test    rax, rax
+    jnz     .done
+    mov     edi, [rbp + fat_volume.backup_fsinfo_lba]
+    call    invalidate_fsinfo
+.done:
+    add     rsp, 8
     ret
 
 ; rsi = directory entry. Return its first cluster in eax.
@@ -839,90 +1135,6 @@ entry_cluster:
     and     eax, FAT_LINK_MASK
     ret
 
-; Chains that intersect must terminate at the same cluster in a valid FAT.
-; Check every reachable file and directory, staying read-only until verified.
-verify_old_chain_owner:
-    xor     eax, eax
-    mov     edi, [rel old_head]
-    test    edi, edi
-    jz      .empty
-    sub     rsp, 8
-    ; Each allocated cluster contributes one FAT lookup, plus at most
-    ; one more for directory traversal. Directory reads fit in the volume.
-    mov     eax, [rel last_cluster]
-    lea     rax, [rax * 2 - 2]
-    add     rax, [rel total_sectors]
-    mov     [rel owner_budget], rax
-    mov     dword [rel cached_fat_lba], -1
-    call    ownership_tail
-    test    rax, rax
-    jnz     .done
-    mov     [rel old_tail], edx
-    mov     edi, [rel root_cluster]
-    mov     esi, FAT_OWNER_DEPTH
-    call    ownership_directory
-.done:
-    add     rsp, 8
-.empty:
-    ret
-
-; Return the terminal cluster in edx, or an error in rax.
-ownership_tail:
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    sub     rsp, 8
-    mov     ebx, edi
-    mov     r12d, edi                 ; Brent cycle detection checkpoint
-    mov     r13d, 1                   ; Steps until the next checkpoint
-    mov     r14d, 1                   ; Checkpoint interval
-.next:
-    mov     edi, ebx
-    call    ownership_link
-    test    rax, rax
-    jnz     .done
-    cmp     edx, FAT_END
-    jae     .tail
-    cmp     edx, r12d
-    je      .cycle
-    dec     r13d
-    jnz     .advance
-    mov     r12d, edx
-    shl     r14d, 1
-    mov     r13d, r14d
-.advance:
-    mov     ebx, edx
-    jmp     .next
-.tail:
-    mov     edx, ebx
-    jmp     .done
-.cycle:
-    lea     rax, [rel unknown_owner]
-.done:
-    add     rsp, 8
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-
-; Cache one sector of each FAT for this read-only pass.
-ownership_link:
-    sub     qword [rel owner_budget], 1
-    jb      owner_unknown
-    cmp     edi, 2
-    jb      owner_unknown
-    cmp     edi, [rel last_cluster]
-    ja      owner_unknown
-    sub     rsp, 8
-    call    cached_fat_link
-    add     rsp, 8
-    lea     rcx, [rel fat_mismatch]
-    cmp     rax, rcx
-    je      owner_unknown
-    ret
-
 ; edi = validated cluster. Return the mirrored link in edx, or error in rax.
 cached_fat_link:
     push    rbx
@@ -931,7 +1143,7 @@ cached_fat_link:
     mov     ebx, edi
     mov     r12d, edi
     shr     r12d, 7
-    add     r12d, [rel reserved_sectors]
+    add     r12d, [rbp + fat_volume.reserved_sectors]
     cmp     r12d, [rel cached_fat_lba]
     je      .cached
     mov     edi, r12d
@@ -945,7 +1157,7 @@ cached_fat_link:
     lea     rcx, [rel fat_sector_pair]
     mov     edx, [rcx + rbx * 4]
     and     edx, FAT_LINK_MASK
-    cmp     dword [rel fat_copies], 2
+    cmp     dword [rbp + fat_volume.fat_copies], 2
     jne     .done
     mov     esi, [rcx + rbx * 4 + BLOCK_SIZE]
     and     esi, FAT_LINK_MASK
@@ -958,127 +1170,6 @@ cached_fat_link:
     pop     rbx
     ret
 
-; edi = directory head, esi = remaining depth. Each recursion level
-; keeps its own directory sector while FAT lookups use the shared cache.
-ownership_directory:
-    test    esi, esi
-    jz      owner_unknown
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    sub     rsp, BLOCK_SIZE
-    mov     r12d, edi
-    mov     r13d, esi
-    call    ownership_tail
-    test    rax, rax
-    jnz     .done
-    cmp     edx, [rel old_tail]
-    je      .shared
-.cluster:
-    mov     edi, r12d
-    call    cluster_lba
-    test    rax, rax
-    jz      .unknown
-    mov     r14, rax
-    mov     r15d, [rel sectors_per_cluster]
-.sector:
-    sub     qword [rel owner_budget], 1
-    jb      .unknown
-    mov     rdi, r14
-    mov     rsi, rsp
-    call    read_sector_into
-    test    rax, rax
-    jnz     .done
-    xor     ebx, ebx
-.entry:
-    lea     rsi, [rsp + rbx]
-    cmp     byte [rsi], 0
-    je      .success
-    cmp     byte [rsi], 0xE5
-    je      .advance
-    test    byte [rsi + 11], 0x08     ; Volume labels and LFN entries.
-    jz      .object
-    test    byte [rsi + 11], 0x10
-    jnz     .unknown
-    jmp     .advance
-.object:
-    cmp     r14, [rel slot_lba]
-    jne     .other
-    cmp     ebx, [rel slot_offset]
-    je      .advance                 ; The entry being replaced.
-.other:
-    call    entry_cluster
-    mov     edi, eax
-    test    byte [rsi + 11], 0x10
-    jnz     .directory
-    test    edi, edi
-    jnz     .file_chain
-    cmp     dword [rsi + 28], 0
-    jne     .unknown
-    jmp     .advance
-.file_chain:
-    call    ownership_tail
-    test    rax, rax
-    jnz     .done
-    cmp     edx, [rel old_tail]
-    je      .shared
-    jmp     .advance
-.directory:
-    cmp     word [rsi], '. '
-    je      .dot
-    cmp     word [rsi], '..'
-    jne     .descend
-.dot:
-    cmp     dword [rsi + 2], 0x20202020
-    jne     .unknown
-    cmp     dword [rsi + 6], 0x20202020
-    jne     .unknown
-    cmp     byte [rsi + 10], ' '
-    jne     .unknown
-    jmp     .advance
-.descend:
-    lea     esi, [r13 - 1]
-    call    ownership_directory
-    test    rax, rax
-    jnz     .done
-.advance:
-    add     ebx, FAT_ENTRY_SIZE
-    cmp     ebx, BLOCK_SIZE
-    jb      .entry
-    inc     r14
-    dec     r15d
-    jnz     .sector
-    mov     edi, r12d
-    call    ownership_link
-    test    rax, rax
-    jnz     .done
-    cmp     edx, FAT_END
-    jae     .success
-    mov     r12d, edx
-    jmp     .cluster
-.success:
-    xor     eax, eax
-    jmp     .done
-.shared:
-    lea     rax, [rel shared_chain]
-    jmp     .done
-.unknown:
-    lea     rax, [rel unknown_owner]
-.done:
-    add     rsp, BLOCK_SIZE
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-
-owner_unknown:
-    lea     rax, [rel unknown_owner]
-    ret
-
 ; Validate exactly as many clusters as the recorded file uses. This also
 ; prevents a cyclic or out-of-range old chain from being reclaimed.
 check_chain:
@@ -1087,7 +1178,7 @@ check_chain:
     push    r13
     mov     ebx, edi
     mov     r12d, esi
-    mov     r13d, [rel sectors_per_cluster]
+    mov     r13d, [rbp + fat_volume.sectors_per_cluster]
     shl     r13d, 9
     test    r12d, r12d
     jnz     .next
@@ -1154,17 +1245,17 @@ find_free:
     push    rbx
     mov     ebx, [rel alloc_cursor]
 .sector:
-    cmp     ebx, [rel last_cluster]
+    cmp     ebx, [rbp + fat_volume.last_cluster]
     ja      .full
     mov     edi, ebx
     shr     edi, 7
-    add     edi, [rel reserved_sectors]
+    add     edi, [rbp + fat_volume.reserved_sectors]
     call    read_fat_pair
     test    rax, rax
     jnz     .done
     lea     rcx, [rel fat_sector_pair]
     mov     r8, rcx
-    cmp     dword [rel fat_copies], 2
+    cmp     dword [rbp + fat_volume.fat_copies], 2
     jne     .next
     lea     r8, [rcx + BLOCK_SIZE]
 .next:
@@ -1175,7 +1266,7 @@ find_free:
     test    esi, FAT_LINK_MASK
     jz      .found
     inc     ebx
-    cmp     ebx, [rel last_cluster]
+    cmp     ebx, [rbp + fat_volume.last_cluster]
     ja      .full
     test    ebx, 127
     jnz     .next
@@ -1196,7 +1287,7 @@ find_free:
 invalidate_fsinfo:
     test    edi, edi
     jz      .skip
-    cmp     edi, [rel reserved_sectors]
+    cmp     edi, [rbp + fat_volume.reserved_sectors]
     jae     .skip
     push    rbx
     mov     ebx, edi
@@ -1218,6 +1309,60 @@ invalidate_fsinfo:
     ret
 .skip:
     xor     eax, eax
+    ret
+
+; Append a zeroed cluster to the verified directory tail. Keep it
+; unreachable until its end-of-directory marker is durable.
+; Return success with slot_lba still zero when the disk is full.
+extend_directory:
+    push    rbx
+    push    r12
+    push    r13
+    call    find_free
+    test    rax, rax
+    jnz     .done
+    test    edx, edx
+    jz      .done
+    mov     ebx, edx
+    mov     edi, ebx
+    mov     esi, FAT_END_MARKER
+    call    set_link
+    test    rax, rax
+    jnz     .done
+    mov     edi, ebx
+    call    cluster_lba
+    mov     r12, rax
+    mov     r13d, [rbp + fat_volume.sectors_per_cluster]
+    lea     rdi, [rel sector_buffer]
+    xor     eax, eax
+    mov     ecx, BLOCK_SIZE / 8
+    rep     stosq
+.zero_sector:
+    mov     rdi, r12
+    call    write_sector
+    test    rax, rax
+    jnz     .done
+    inc     r12
+    dec     r13d
+    jnz     .zero_sector
+    call    block_flush
+    test    rax, rax
+    jnz     .done
+    mov     edi, [rel slot_dir_cluster]
+    mov     esi, ebx
+    call    set_link
+    test    rax, rax
+    jnz     .done
+    mov     edi, ebx
+    call    cluster_lba
+    mov     [rel slot_lba], rax
+    mov     dword [rel slot_offset], 0
+    mov     byte [rel slot_at_end], 1
+    xor     eax, eax
+.done:
+    pop     r13
+    pop     r12
+    pop     rbx
     ret
 
 ; When reusing an end marker in the last slot of a sector, preserve the
@@ -1276,17 +1421,19 @@ short_punctuation:  db "!#$%&'()-@^_`{}~", 0
 mounted_text:       db "FAT32 mounted.", 10, 0
 unmounted_text:     db "FAT32 unmounted.", 10, 0
 already_mounted:    db "Unmount the current FAT32 volume first.", 10, 0
+overlapping_mount:   db "Partition overlaps an active mount.", 10, 0
 no_mount:           db "No FAT32 volume mounted.", 10, 0
 missing_partition:  db "Invalid or missing GPT partition.", 10, 0
 unsupported_volume: db "Unsupported or invalid FAT32 volume.", 10, 0
 invalid_name:       db "Use a short FAT name (8.3).", 10, 0
 file_missing:       db "Disk file not found.", 10, 0
 invalid_chain:      db "Invalid or unsupported FAT32 cluster chain.", 10, 0
-shared_chain:       db "FAT32 replacement refused: shared cluster chain.", 10, 0
-unknown_owner:      db "FAT32 replacement refused: cluster ownership could not be verified.", 10, 0
 file_read_only:     db "Disk file is read-only.", 10, 0
 name_is_directory:  db "Disk name refers to a directory.", 10, 0
-root_full:          db "FAT32 root directory is full.", 10, 0
+directory_missing:   db "FAT32 directory not found.", 10, 0
+duplicate_name:     db "Duplicate FAT32 short name.", 10, 0
+lfn_remove:         db "Cannot remove a FAT32 file with long-name entries.", 10, 0
+root_full:          db "FAT32 directory is full.", 10, 0
 volume_full:        db "FAT32 volume is full.", 10, 0
 file_large:         db "RAM file is too large for this FAT32 writer.", 10, 0
 put_usage:          db "Usage: disk put RAMFILE NAME", 10, 0
@@ -1295,39 +1442,24 @@ blocked_text:       db "FAT32 writes stopped after an I/O error.", 10, 0
 
 section .bss
 alignb 8
-volume_base:          resq 1
-total_sectors:        resq 1
-data_start:           resq 1
 slot_lba:             resq 1
-reserved_sectors:    resd 1
-fat_copies:          resd 1
-sectors_per_fat:     resd 1
-sectors_per_cluster: resd 1
-last_cluster:        resd 1
-root_cluster:        resd 1
-fsinfo_lba:          resd 1
-backup_fsinfo_lba:   resd 1
 slot_offset:         resd 1
 slot_dir_cluster:    resd 1
 slot_dir_left:       resd 1
 slot_size:           resd 1
 slot_cluster:        resd 1
-dir_budget:          resd 1
 new_size:            resd 1
 new_head:            resd 1
 old_head:            resd 1
-old_tail:            resd 1
 cached_fat_lba:      resd 1
 alloc_cursor:        resd 1
-mounted:             resb 1
-modified:            resb 1
-write_blocked:       resb 1
 slot_found:          resb 1
 slot_at_end:         resb 1
 slot_attr:           resb 1
+slot_lfn:            resb 1
+pending_lfn:         resb 1
 name_buf:            resb 11
 alignb 16
-owner_budget:        resq 1
 fat_sector_pair:      resb 2 * BLOCK_SIZE
 sector_buffer:       resb BLOCK_SIZE
 

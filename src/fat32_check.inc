@@ -1,8 +1,17 @@
 ; Explicit FAT32 consistency check and orphan reclamation.
-%define FAT_CHECK_DEPTH 16
 %define FAT_BITMAP_SHIFT (PAGE_SHIFT + 3)
 %define FAT_BITMAP_BITS (1 << FAT_BITMAP_SHIFT)
 %define FAT_BITMAP_PAGES (1 << (28 - FAT_BITMAP_SHIFT))
+
+struc check_dir_frame
+    .cluster: resd 1
+    .head:    resd 1
+    .sectors: resd 1
+    .offset:  resd 1
+    .parent:  resd 1
+    alignb    8
+    .lba:     resq 1
+endstruc
 
 extern page_alloc
 extern page_free
@@ -20,25 +29,18 @@ fat_repair:
 fat_check:
     xor     edi, edi
 check_volume:
-    cmp     byte [rel mounted], 0
+    cmp     byte [rbp + fat_volume.mounted], 0
     je      print_unmounted
     test    edi, edi
     jz      .start
-    cmp     byte [rel write_blocked], 0
+    cmp     byte [rbp + fat_volume.write_error], 0
     jne     print_write_blocked
 .start:
     push    rbx
     push    r12
     sub     rsp, 8
     mov     ebx, edi
-    call    check_alloc_bitmap
-    test    rax, rax
-    jnz     .finish
-    mov     dword [rel cached_fat_lba], -1
-    mov     edi, [rel root_cluster]
-    xor     esi, esi
-    mov     edx, FAT_CHECK_DEPTH
-    call    check_directory
+    call    check_reachable_tree
     test    rax, rax
     jnz     .finish
     mov     dword [rel orphan_count], 0
@@ -52,16 +54,7 @@ check_volume:
     je      .report
 
     ; Publish nothing until the entire directory tree and FATs have passed.
-    call    block_flush
-    test    rax, rax
-    jnz     .finish
-    mov     byte [rel modified], 1
-    mov     edi, [rel fsinfo_lba]
-    call    invalidate_fsinfo
-    test    rax, rax
-    jnz     .write_error
-    mov     edi, [rel backup_fsinfo_lba]
-    call    invalidate_fsinfo
+    call    prepare_mutation
     test    rax, rax
     jnz     .write_error
     mov     edi, 1
@@ -71,6 +64,7 @@ check_volume:
     call    block_flush
     test    rax, rax
     jnz     .write_error
+    mov     byte [rbp + fat_volume.pending_write], 0
 
 .report:
     lea     rdi, [rel orphan_report]
@@ -85,7 +79,7 @@ check_volume:
     xor     eax, eax
     jmp     .finish
 .write_error:
-    mov     byte [rel write_blocked], 1
+    mov     byte [rbp + fat_volume.write_error], 1
 .finish:
     mov     r12, rax
     call    check_free_bitmap
@@ -97,11 +91,34 @@ check_volume:
     jnz     print_error
     ret
 
+verify_mutation_tree:
+    push    rbx
+    call    check_reachable_tree
+    mov     rbx, rax
+    call    check_free_bitmap
+    mov     rax, rbx
+    pop     rbx
+    ret
+
+; The caller frees the bitmap on every exit, including allocation failures.
+check_reachable_tree:
+    sub     rsp, 8
+    call    check_alloc_bitmap
+    add     rsp, 8
+    test    rax, rax
+    jnz     .done
+    mov     dword [rel cached_fat_lba], -1
+    mov     edi, [rbp + fat_volume.root_cluster]
+    xor     esi, esi
+    jmp     check_directory
+.done:
+    ret
+
 check_alloc_bitmap:
     push    rbx
     push    r12
     sub     rsp, 8
-    mov     eax, [rel last_cluster]
+    mov     eax, [rbp + fat_volume.last_cluster]
     shr     eax, FAT_BITMAP_SHIFT
     inc     eax
     cmp     rax, [rel pages_free]
@@ -166,7 +183,7 @@ check_mark_chain:
 .cluster:
     cmp     ebx, 2
     jb      .invalid
-    cmp     ebx, [rel last_cluster]
+    cmp     ebx, [rbp + fat_volume.last_cluster]
     ja      .invalid
     mov     edi, ebx
     call    check_cluster_bit
@@ -193,21 +210,20 @@ check_mark_chain:
     pop     rbx
     ret
 
-; edi = directory head, esi = parent head (zero for root), edx = depth left.
+; edi = directory head, esi = parent head (zero for root).
+; Suspend parent cursors on a page-backed stack. Reload the parent sector
+; on return so only one sector buffer is needed for the traversal.
 check_directory:
-    test    edx, edx
-    jz      check_too_deep
     push    rbx
-    push    rbp
     push    r12
     push    r13
     push    r14
     push    r15
-    sub     rsp, BLOCK_SIZE + 8
+    sub     rsp, BLOCK_SIZE + 16
+.open:
     mov     r12d, edi
     mov     r13d, edi
-    mov     ebp, esi
-    mov     r15d, edx
+    mov     [rsp + BLOCK_SIZE], esi
     xor     esi, esi
     call    check_mark_chain
     test    rax, rax
@@ -216,8 +232,7 @@ check_directory:
     mov     edi, r12d
     call    cluster_lba
     mov     r14, rax
-    mov     eax, [rel sectors_per_cluster]
-    mov     [rsp + BLOCK_SIZE], eax
+    mov     r15d, [rbp + fat_volume.sectors_per_cluster]
 .sector:
     mov     rdi, r14
     mov     rsi, rsp
@@ -248,7 +263,7 @@ check_directory:
     xor     esi, esi
     jmp     .file
 .sized_file:
-    mov     ecx, [rel sectors_per_cluster]
+    mov     ecx, [rbp + fat_volume.sectors_per_cluster]
     shl     ecx, 9
     dec     eax
     xor     edx, edx
@@ -270,15 +285,18 @@ check_directory:
 .directory:
     cmp     byte [rsi], '.'
     je      .dot
-    lea     edx, [r15 - 1]
+    mov     esi, [rsp + BLOCK_SIZE]
+    call    check_push_directory
+    test    rax, rax
+    jnz     .done
     mov     esi, r13d
-    call    check_directory
+    jmp     .open
 .check_error:
     test    rax, rax
     jnz     .done
     jmp     .advance
 .dot:
-    test    ebp, ebp                  ; Only subdirectories contain dot entries.
+    cmp     dword [rsp + BLOCK_SIZE], 0 ; Only subdirectories contain dot entries.
     jz      .invalid
     mov     rcx, 0x2020202020202020
     cmp     [rsi + 2], rcx
@@ -289,11 +307,12 @@ check_directory:
     je      .self
     cmp     word [rsi], '..'
     jne     .invalid
-    cmp     edi, ebp
+    cmp     edi, [rsp + BLOCK_SIZE]
     je      .advance
     test    edi, edi                  ; A parent of zero denotes the root.
     jnz     .invalid
-    cmp     ebp, [rel root_cluster]
+    mov     eax, [rsp + BLOCK_SIZE]
+    cmp     eax, [rbp + fat_volume.root_cluster]
     je      .advance
     jmp     .invalid
 .self:
@@ -304,7 +323,7 @@ check_directory:
     cmp     ebx, BLOCK_SIZE
     jb      .entry
     inc     r14
-    dec     dword [rsp + BLOCK_SIZE]
+    dec     r15d
     jnz     .sector
     mov     edi, r12d
     call    cached_fat_link
@@ -314,37 +333,101 @@ check_directory:
     cmp     edx, FAT_END
     jb      .cluster
 .success:
-    xor     eax, eax
-    jmp     .done
+    mov     rax, [rel check_dir_stack]
+    test    rax, rax
+    jz      .done
+    sub     rax, check_dir_frame_size
+    mov     [rel check_dir_stack], rax
+    mov     r12d, [rax + check_dir_frame.cluster]
+    mov     r13d, [rax + check_dir_frame.head]
+    mov     r15d, [rax + check_dir_frame.sectors]
+    mov     ebx, [rax + check_dir_frame.offset]
+    mov     edx, [rax + check_dir_frame.parent]
+    mov     [rsp + BLOCK_SIZE], edx
+    mov     r14, [rax + check_dir_frame.lba]
+    and     eax, PAGE_SIZE - 1
+    cmp     eax, check_dir_frame_size
+    jne     .resume
+    call    check_free_dir_page
+.resume:
+    mov     rdi, r14
+    mov     rsi, rsp
+    call    read_sector_into
+    test    rax, rax
+    jnz     .done
+    jmp     .advance
 .invalid:
     lea     rax, [rel check_bad_tree]
 .done:
-    add     rsp, BLOCK_SIZE + 8
+    mov     r12, rax
+.free_stack:
+    cmp     qword [rel check_dir_stack], 0
+    je      .return
+    call    check_free_dir_page
+    jmp     .free_stack
+.return:
+    mov     rax, r12
+    add     rsp, BLOCK_SIZE + 16
     pop     r15
     pop     r14
     pop     r13
     pop     r12
-    pop     rbp
     pop     rbx
     ret
 
-check_too_deep:
-    lea     rax, [rel check_depth_error]
+; Preserve the child cluster in edi. The 32-byte slots divide the page
+; evenly. The first slot links to the previous page's stack pointer.
+check_push_directory:
+    mov     rax, [rel check_dir_stack]
+    test    eax, PAGE_SIZE - 1
+    jnz     .save
+    push    rdi
+    push    rsi
+    sub     rsp, 8
+    call    page_alloc
+    add     rsp, 8
+    pop     rsi
+    pop     rdi
+    test    rax, rax
+    jz      .oom
+    mov     rdx, [rel check_dir_stack]
+    mov     [rax], rdx
+    add     rax, check_dir_frame_size
+.save:
+    mov     [rax + check_dir_frame.cluster], r12d
+    mov     [rax + check_dir_frame.head], r13d
+    mov     [rax + check_dir_frame.sectors], r15d
+    mov     [rax + check_dir_frame.offset], ebx
+    mov     [rax + check_dir_frame.parent], esi
+    mov     [rax + check_dir_frame.lba], r14
+    add     rax, check_dir_frame_size
+    mov     [rel check_dir_stack], rax
+    xor     eax, eax
     ret
+.oom:
+    lea     rax, [rel check_stack_no_memory]
+    ret
+
+check_free_dir_page:
+    mov     rdi, [rel check_dir_stack]
+    dec     rdi
+    and     rdi, -PAGE_SIZE
+    mov     rax, [rdi]
+    mov     [rel check_dir_stack], rax
+    jmp     page_free
 
 ; edi = 0 for validation and counting, 1 to clear proven orphans after validation.
 check_fat_table:
     push    rbx
-    push    rbp
     push    r12
     push    r13
     push    r14
     push    r15
-    sub     rsp, 8
-    mov     ebp, edi
+    sub     rsp, 16
+    mov     [rsp + 4], edi
     xor     ebx, ebx                  ; Cluster number (including FAT padding).
-    mov     r12d, [rel reserved_sectors]
-    mov     r14d, [rel sectors_per_fat]
+    mov     r12d, [rbp + fat_volume.reserved_sectors]
+    mov     r14d, [rbp + fat_volume.sectors_per_fat]
 .sector:
     mov     edi, r12d
     call    read_fat_pair
@@ -356,7 +439,7 @@ check_fat_table:
 .entry:
     mov     edx, [r13 + r15]
     and     edx, FAT_LINK_MASK
-    cmp     dword [rel fat_copies], 2
+    cmp     dword [rbp + fat_volume.fat_copies], 2
     jne     .classify
     mov     eax, [r13 + r15 + BLOCK_SIZE]
     and     eax, FAT_LINK_MASK
@@ -365,7 +448,7 @@ check_fat_table:
 .classify:
     cmp     rbx, 2
     jb      .next
-    mov     eax, [rel last_cluster]
+    mov     eax, [rbp + fat_volume.last_cluster]
     cmp     rbx, rax
     ja      .next
     test    edx, edx
@@ -383,7 +466,7 @@ check_fat_table:
     call    check_cluster_bit
     bt      qword [rax], rcx
     jc      .next
-    test    ebp, ebp
+    cmp     dword [rsp + 4], 0
     jnz     .clear
     inc     dword [rel orphan_count]
     jmp     .next
@@ -403,10 +486,10 @@ check_fat_table:
     call    write_sector_from
     test    rax, rax
     jnz     .done
-    cmp     dword [rel fat_copies], 2
+    cmp     dword [rbp + fat_volume.fat_copies], 2
     jne     .advance
     mov     edi, r12d
-    add     edi, [rel sectors_per_fat]
+    add     edi, [rbp + fat_volume.sectors_per_fat]
     lea     rsi, [r13 + BLOCK_SIZE]
     call    write_sector_from
     test    rax, rax
@@ -423,25 +506,25 @@ check_fat_table:
 .invalid:
     lea     rax, [rel check_bad_tree]
 .done:
-    add     rsp, 8
+    add     rsp, 16
     pop     r15
     pop     r14
     pop     r13
     pop     r12
-    pop     rbp
     pop     rbx
     ret
 
 section .rodata
 fat_mismatch:       db "FAT32 check failed: FAT copies disagree.", 10, 0
 check_bad_tree:     db "FAT32 check failed: cluster ownership could not be verified.", 10, 0
-check_depth_error:  db "FAT32 check failed: directory nesting exceeds the scan limit.", 10, 0
+check_stack_no_memory: db "FAT32 check failed: insufficient memory for directory traversal.", 10, 0
 check_no_memory:    db "FAT32 check failed: insufficient memory for the cluster map.", 10, 0
 orphan_report:      db "Orphaned FAT32 clusters: ", 0
 reclaimed_report:   db "Reclaimed FAT32 clusters: ", 0
 
 section .bss
 alignb 8
+check_dir_stack:     resq 1
 check_pages:        resq FAT_BITMAP_PAGES
 check_page_count:   resd 1
 orphan_count:       resd 1

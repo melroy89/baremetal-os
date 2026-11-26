@@ -39,7 +39,7 @@ check_network() {
     fi
 
     console_check 'net recv' 'Ethernet receive timed out\.'
-    console_check 'echo Test > payload' 'echo Test > payload'
+    console_check 'echo Test > /ram/payload' 'echo Test > /ram/payload'
     console_check 'net send 52:54:00:AB:CD 88B5 payload' 'Usage: net info'
     for frame in {1..9}; do
         cat "$files/inbound" >&"$wire_in"

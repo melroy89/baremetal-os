@@ -42,6 +42,7 @@ global ramfs_mount
 global ramfs_ls
 global ramfs_cat
 global ramfs_write
+global ramfs_touch
 global ramfs_rm
 global ramfs_lookup
 global ramfs_not_found
@@ -504,9 +505,23 @@ ramfs_lookup:
     pop     r12
     ret
 
-; One page holds metadata and the complete output line. Replacing a file
+ramfs_touch:
+    push    rbx
+    mov     rbx, rdi
+    call    ramfs_lookup
+    mov     rdi, rbx
+    pop     rbx
+    test    rax, rax
+    jnz     .done
+    xor     esi, esi
+    xor     edx, edx
+    jmp     ramfs_write
+.done:
+    ret
+
+; One page holds metadata and the file data. Replacing a file
 ; reuses its page. The boot archive stays available underneath the copy.
-; rdi = flat file name, rsi = text, rdx = text length.
+; rdi = flat file name, rsi = bytes, rdx = length.
 ramfs_write:
     push    rbx
     push    r12
@@ -516,7 +531,7 @@ ramfs_write:
     mov     r12, rdi
     mov     r13, rsi
     mov     r14, rdx
-    cmp     r14, PAGE_SIZE - FILE_DATA - 1
+    cmp     r14, PAGE_SIZE - FILE_DATA
     ja      .too_long
     call    filename_length
     test    eax, eax
@@ -542,9 +557,7 @@ ramfs_write:
     mov     rsi, r13
     mov     rcx, r14
     rep     movsb
-    mov     byte [rdi], 10
-    lea     rcx, [r14 + 1]
-    mov     [rax + FILE_SIZE], rcx
+    mov     [rax + FILE_SIZE], r14
     test    r15, r15
     jz      .done
     mov     [r15], rax

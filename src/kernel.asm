@@ -37,9 +37,9 @@ extern command_lspci
 extern command_disk
 extern command_net
 extern ramfs_mount
-extern ramfs_ls
-extern ramfs_cat
-extern ramfs_rm
+extern command_ls, command_cat, command_rm, command_cd, command_pwd
+extern command_touch
+extern command_mount, command_umount
 extern command_echo
 
 section .text
@@ -327,11 +327,16 @@ help_text:
     help_row "lspci",    "List PCI devices (--all checks every function)"
     help_row "disk",     "Access the IDE disk, GPT partitions, and FAT32 files"
     help_row "net",      "Show link info or receive and send Ethernet frames"
-    help_row "ls",       "List files in the RAM filesystem"
-    help_row "cat FILE", "Print a file from the RAM filesystem"
+    help_row "ls [PATH]", "List a directory or show mounts at /"
+    help_row "cd PATH", "Change the current directory"
+    help_row "pwd", "Print the current directory"
+    help_row "mount", "List or mount FAT32 volumes"
+    help_row "umount",   "Unmount a volume by path"
+    help_row "cat FILE", "Print a file"
     help_row "crc32 FILE", "Show a RAM file's CRC-32 checksum"
-    help_row "echo",     "Print text or write it to a RAM file with >"
-    help_row "rm FILE",  "Remove a writable RAM file"
+    help_row "echo",     "Print text or write it to a file with >"
+    help_row "touch PATH", "Create an empty file if it does not exist"
+    help_row "rm FILE",  "Remove a writable file"
     help_row "uptime",   "Show time since boot"
     help_row "log",      "Show boot milestones"
     help_row "version",  "Show the kernel version and build identifier"
@@ -369,10 +374,15 @@ lspci_name:        db "lspci", 0
 disk_name:         db "disk", 0
 net_name:          db "net", 0
 ls_name:           db "ls", 0
+cd_name:           db "cd", 0
+pwd_name:          db "pwd", 0
+mount_name:        db "mount", 0
+umount_name:       db "umount", 0
 cat_name:          db "cat", 0
 crc32_name:        db "crc32", 0
 echo_name:         db "echo", 0
 rm_name:           db "rm", 0
+touch_name:        db "touch", 0
 uptime_name:       db "uptime", 0
 log_name:          db "log", 0
 version_name:      db "version", 0
@@ -393,11 +403,16 @@ commands:
     dq lspci_name, command_lspci, 1
     dq disk_name, command_disk, 1
     dq net_name, command_net, 1
-    dq ls_name, ramfs_ls, 0
-    dq cat_name, ramfs_cat, 1
+    dq ls_name, command_ls, 1
+    dq cd_name, command_cd, 1
+    dq pwd_name, command_pwd, 0
+    dq mount_name, command_mount, 1
+    dq umount_name, command_umount, 1
+    dq cat_name, command_cat, 1
     dq crc32_name, command_crc32, 1
     dq echo_name, command_echo, 1
-    dq rm_name, ramfs_rm, 1
+    dq touch_name, command_touch, 1
+    dq rm_name, command_rm, 1
     dq uptime_name, command_uptime, 0
     dq log_name, command_log, 0
     dq version_name, command_version, 0

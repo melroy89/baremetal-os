@@ -48,7 +48,7 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 
 ## Console quick reference
 
-At the `baremetal>` prompt, start with `help`.
+The console starts at `/`. Run `help` for commands or `ls` to see available volumes.
 
 | Command                    | Action                                             |
 | -------------------------- | -------------------------------------------------- |
@@ -57,7 +57,13 @@ At the `baremetal>` prompt, start with `help`.
 | `lspci`                    | List PCI devices.                                  |
 | `disk info`                | Inspect the attached IDE disk.                     |
 | `net info`                 | Show the Ethernet adapter and link state.          |
-| `ls`                       | List RAM files.                                    |
+| `ls [PATH]`                | List files in RAM or on a mounted volume.          |
+| `cd PATH`, `pwd`           | Change or show the current directory.              |
+| `cat PATH`, `rm PATH`      | Read or remove a file.                             |
+| `echo [TEXT] > PATH`       | Write text to a file.                              |
+| `touch PATH`               | Create an empty file.                              |
+| `mount [disk0pN /NAME]`    | List volumes or mount an IDE partition.            |
+| `umount /NAME`             | Unmount a named volume.                            |
 | `uptime`, `log`, `version` | Check runtime, boot milestones, and build details. |
 | `reboot`, `halt`           | Restart or power off the guest.                    |
 

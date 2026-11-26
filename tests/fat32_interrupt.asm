@@ -1,4 +1,4 @@
-; Stop a disposable guest after flushing replacement data, before publishing it.
+; Stop a disposable guest at the second FAT32 flush.
 bits 64
 default rel
 
@@ -26,7 +26,7 @@ __wrap_block_flush:
     ret
 
 section .rodata
-cut_point: db "Test: replacement data flushed before directory update.", 10, 0
+cut_point: db "Test: second FAT32 flush complete.", 10, 0
 
 section .bss
 flushes: resd 1

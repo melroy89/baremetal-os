@@ -3,6 +3,7 @@ set -euo pipefail
 export LC_ALL=C
 
 source tests/qemu_serial.sh
+source tests/vfs_cases.sh
 
 console_check() {
     printf '%s\r' "$1" >&"$serial_write"
@@ -65,7 +66,7 @@ check_fat_write() {
     console_check 'disk mount 1' 'FAT32 mounted\.'
     console_check 'disk put long.txt save.txt' 'Disk file saved\.'
     console_check 'disk cat save.txt' $'\r?\nFirst line\r?\n'
-    console_check 'echo Replacement > msg' 'echo Replacement'
+    console_check 'echo Replacement > /ram/msg' 'echo Replacement'
     console_check 'disk put msg save.txt' 'Disk file saved\.'
     console_check 'disk put empty.txt empty.txt' 'Disk file saved\.'
     console_check 'disk unmount' 'FAT32 unmounted\.'
@@ -73,13 +74,6 @@ check_fat_write() {
     console_check 'disk mount 1' 'FAT32 mounted\.'
     console_check 'disk cat save.txt' $'\r?\nReplacement\r?\n'
     console_check 'disk unmount' 'FAT32 unmounted\.'
-}
-
-check_fat_interruption() {
-    expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
-    printf 'disk put long.txt host.txt\r' >&"$serial_write"
-    expect_serial 'Test: replacement data flushed before directory update\.'
 }
 
 check_fat_orphans() {
@@ -108,21 +102,35 @@ check_fat_repair_refusal() {
     console_check 'disk unmount' 'FAT32 unmounted\.'
 }
 
-check_fat_refusal() {
+check_fat_ownership_refusal() {
+    local error='FAT32 check failed: cluster ownership could not be verified\.'
     expect_serial 'baremetal> '
     console_check 'disk mount 1' 'FAT32 mounted\.'
-    console_check 'echo Replacement > msg' 'echo Replacement'
-    console_check 'disk put msg host.txt' "$refusal"
+    console_check 'echo Replacement > /ram/msg' 'echo Replacement'
+    console_check 'disk put msg host.txt' "$error"
+    console_check "echo Fresh > $create_target" "$error"
+    console_check 'disk check' "$error"
+    console_check 'disk repair' "$error"
     console_check 'disk cat host.txt' $'\r?\nHost seeded\r?\n'
+    console_check 'disk unmount' 'FAT32 unmounted\.'
+}
+
+check_fat_mirror_refusal() {
+    expect_serial 'baremetal> '
+    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'echo Fresh > /disk/new.txt' 'FAT32 check failed: FAT copies disagree\.'
+    console_check 'echo Replacement > /ram/msg' 'echo Replacement'
+    console_check 'disk put msg host.txt' "$replacement_error"
     console_check 'disk unmount' 'FAT32 unmounted\.'
 }
 
 check_fat_replace() {
     expect_serial 'baremetal> '
     console_check 'disk mount 1' 'FAT32 mounted\.'
-    console_check 'echo Replacement > msg' 'echo Replacement'
+    console_check 'echo Replacement > /ram/msg' 'echo Replacement'
     console_check 'disk put msg host.txt' 'Disk file saved\.'
     console_check 'disk cat host.txt' $'\r?\nReplacement\r?\n'
+    console_check 'disk put msg lower.txt' 'Disk file saved\.'
     console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
     console_check 'disk unmount' 'FAT32 unmounted\.'
 }
@@ -130,18 +138,9 @@ check_fat_replace() {
 check_fat_create_with_bad_mirror() {
     expect_serial 'baremetal> '
     console_check 'disk mount 1' 'FAT32 mounted\.'
-    console_check 'echo New file > msg' 'echo New file'
+    console_check 'echo New file > /ram/msg' 'echo New file'
     console_check 'disk put msg new.txt' 'Disk file saved\.'
     console_check 'disk cat new.txt' $'\r?\nNew file\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
-}
-
-check_fat_replace_lowercase() {
-    expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
-    console_check 'echo Replacement > msg' 'echo Replacement'
-    console_check 'disk put msg lower.txt' 'Disk file saved\.'
-    console_check 'disk cat lower.txt' $'\r?\nReplacement\r?\n'
     console_check 'disk unmount' 'FAT32 unmounted\.'
 }
 
@@ -165,14 +164,6 @@ copy_cluster_pointer() {
         dd if="$image" bs=1 skip=$((source + offset)) count=2 status=none |
             dd of="$image" bs=1 seek=$((target + offset)) conv=notrunc status=none
     done
-}
-
-check_unchanged_image() {
-    local label=$1 image=$2 refusal=$3
-    sha256sum "$image" > "$files/rejected.sha"
-    run_guest "$label" 1 64M check_fat_refusal \
-        -machine pc -kernel "$kernel" -drive "file=$image,format=raw,if=ide,index=0"
-    sha256sum --check --status "$files/rejected.sha"
 }
 
 host_crc() {
@@ -261,59 +252,66 @@ if [[ $slice == all || $slice == fat32 ]]; then
 
     cp --sparse=always "$files/disk.raw" "$files/shared-root.raw"
     copy_cluster_pointer "$files/shared-root.raw" "$host_entry" "$peer_entry"
-    check_unchanged_image 'FAT32 rejects a root cross-link' "$files/shared-root.raw" \
-        'FAT32 replacement refused: shared cluster chain\.'
-    mtype -i "$files/shared-root.raw@@1048576" ::PEER.TXT | cmp - "$files/host.txt"
+    create_target=/disk/new.txt check_image_unchanged 'FAT32 refuses writes on a root cross-link' \
+        "$files/shared-root.raw" check_fat_ownership_refusal
 
     cp --sparse=always "$files/disk.raw" "$files/shared-subdir.raw"
     copy_cluster_pointer "$files/shared-subdir.raw" "$host_entry" "$nested_entry"
-    check_unchanged_image 'FAT32 rejects a subdirectory cross-link' "$files/shared-subdir.raw" \
-        'FAT32 replacement refused: shared cluster chain\.'
-    mtype -i "$files/shared-subdir.raw@@1048576" ::SUBDIR/NESTED.TXT | cmp - "$files/host.txt"
+    create_target=/disk/subdir/new.txt check_image_unchanged 'FAT32 refuses writes on a subdirectory cross-link' \
+        "$files/shared-subdir.raw" check_fat_ownership_refusal
 
-    cp --sparse=always "$files/disk.raw" "$files/bad-mirror.raw"
     host_high=$(od -An -tu2 -j $((host_entry + 20)) -N 2 "$files/disk.raw")
     host_low=$(od -An -tu2 -j $((host_entry + 26)) -N 2 "$files/disk.raw")
-    mirror_offset=$((1048576 + (fat_reserved + fat_size) * 512 + ((host_high << 16) + host_low) * 4))
-    printf '\000\000\000\000' | dd of="$files/bad-mirror.raw" bs=1 seek="$mirror_offset" conv=notrunc status=none
-    check_unchanged_image 'FAT32 refuses replacement if FAT copies disagree' "$files/bad-mirror.raw" \
-        'FAT32 replacement refused: cluster ownership could not be verified\.'
-
     host_cluster=$(((host_high << 16) + host_low))
-    host_lba=$((data_offset / 512 + host_cluster - 2))
     for ((fat_index = 0; fat_index < fat_count; fat_index++)); do
         image="$files/bad-allocation-$fat_index.raw"
         cp --sparse=always "$files/disk.raw" "$image"
         free_offset=$((1048576 + (fat_reserved + fat_index * fat_size) * 512 + host_cluster * 4))
         printf '\000\000\000\000' | dd of="$image" bs=1 seek="$free_offset" conv=notrunc status=none
-        run_guest "FAT32 skips a live cluster marked free in FAT $((fat_index + 1))" 1 64M \
-            check_fat_create_with_bad_mirror -machine pc -kernel "$kernel" \
-            -drive "file=$image,format=raw,if=ide,index=0"
-        dd if="$image" bs=1 skip="$free_offset" count=4 status=none | cmp - <(printf '\000\000\000\000')
-        # Read the original data directly when the first FAT's chain is invalid.
-        dd if="$image" bs=512 skip="$host_lba" count=1 status=none |
-            cmp - <(dd if="$files/disk.raw" bs=512 skip="$host_lba" count=1 status=none)
-        mtype -i "$image@@1048576" ::NEW.TXT | cmp - <(printf 'New file\n')
+        replacement_error='FAT32 check failed: FAT copies disagree\.'
+        if (( fat_index == 0 )); then
+            replacement_error='Invalid or unsupported FAT32 cluster chain\.'
+        fi
+        check_image_unchanged "FAT32 refuses a reachable mismatch in FAT $((fat_index + 1))" \
+            "$image" check_fat_mirror_refusal
     done
 
-    cp --sparse=always "$files/disk.raw" "$files/attributes.raw"
-    printf '\006' | dd of="$files/attributes.raw" bs=1 seek=$((host_entry + 11)) conv=notrunc status=none
-    printf '\115\134\144\106\130' > "$files/creation-time"
-    dd if="$files/creation-time" of="$files/attributes.raw" bs=1 seek=$((host_entry + 13)) conv=notrunc status=none
-    run_guest 'FAT32 replacement preserves attributes and creation time' 1 64M check_fat_replace \
-        -machine pc -kernel "$kernel" -drive "file=$files/attributes.raw,format=raw,if=ide,index=0"
-    dd if="$files/attributes.raw" bs=1 skip=$((host_entry + 11)) count=1 status=none | cmp - <(printf '\046')
-    dd if="$files/attributes.raw" bs=1 skip=$((host_entry + 13)) count=5 status=none | cmp - "$files/creation-time"
+    # An unreferenced cluster claimed by only one FAT must still not be allocated.
+    reserved_cluster=2
+    while (( $(od -An -tu4 -j $((1048576 + fat_reserved * 512 + reserved_cluster * 4)) -N 4 "$files/disk.raw") != 0 )); do
+        ((reserved_cluster += 1))
+    done
+    cp --sparse=always "$files/disk.raw" "$files/disputed-free.raw"
+    reserved_offset=$((1048576 + (fat_reserved + fat_size) * 512 + reserved_cluster * 4))
+    printf '\377\377\377\017' | dd of="$files/disputed-free.raw" bs=1 seek="$reserved_offset" conv=notrunc status=none
+    reserved_lba=$((data_offset / 512 + reserved_cluster - 2))
+    printf 'Unreferenced data' | dd of="$files/disputed-free.raw" bs=512 seek="$reserved_lba" conv=notrunc status=none
+    run_guest 'FAT32 allocator skips an unreferenced disputed cluster' 1 64M check_fat_create_with_bad_mirror \
+        -machine pc -kernel "$kernel" -drive "file=$files/disputed-free.raw,format=raw,if=ide,index=0"
+    dd if="$files/disputed-free.raw" bs=1 skip="$(((reserved_lba * 512)))" count=17 status=none |
+        cmp - <(printf 'Unreferenced data')
+    mtype -i "$files/disputed-free.raw@@1048576" ::NEW.TXT | cmp - <(printf 'New file\n')
 
-    cp --sparse=always "$files/disk.raw" "$files/lowercase.raw"
-    mcopy -i "$files/lowercase.raw@@1048576" "$files/host.txt" ::lower.txt
-    lower_entry=$(short_entry_offset "$files/lowercase.raw" "$root_offset" 'LOWER   TXT')
-    dd if="$files/lowercase.raw" bs=1 skip=$((lower_entry + 12)) count=1 status=none | cmp - <(printf '\030')
-    run_guest 'FAT32 replacement preserves short-name case' 1 64M check_fat_replace_lowercase \
-        -machine pc -kernel "$kernel" -drive "file=$files/lowercase.raw,format=raw,if=ide,index=0"
-    mdir -b -i "$files/lowercase.raw@@1048576" :: | grep -Fx '::/lower.txt'
-    dd if="$files/lowercase.raw" bs=1 skip=$((lower_entry + 12)) count=1 status=none | cmp - <(printf '\030')
-    mtype -i "$files/lowercase.raw@@1048576" ::lower.txt | cmp - <(printf 'Replacement\n')
+    image="$files/replacement.raw"
+    cp --sparse=always "$files/disk.raw" "$image"
+    mcopy -i "$image@@1048576" "$files/host.txt" ::lower.txt
+    lower_entry=$(short_entry_offset "$image" "$root_offset" 'LOWER   TXT')
+    printf '\006' | dd of="$image" bs=1 seek=$((host_entry + 11)) conv=notrunc status=none
+    printf '\115\134\144\106\130' > "$files/creation-time"
+    dd if="$files/creation-time" of="$image" bs=1 seek=$((host_entry + 13)) conv=notrunc status=none
+    dd if="$image" bs=1 skip=$((lower_entry + 12)) count=1 status=none | cmp - <(printf '\030')
+    truncate -s 34M "$files/large.bin"
+    printf 'last sector' | dd of="$files/large.bin" bs=512 seek=$((34 * 2048 - 1)) conv=notrunc status=none
+    mcopy -i "$image@@1048576" "$files/large.bin" ::LARGE.BIN
+    run_guest 'FAT32 replacement preserves metadata beside a large file' 1 64M check_fat_replace \
+        -machine pc -kernel "$kernel" -drive "file=$image,format=raw,if=ide,index=0"
+    dd if="$image" bs=1 skip=$((host_entry + 11)) count=1 status=none | cmp - <(printf '\046')
+    dd if="$image" bs=1 skip=$((host_entry + 13)) count=5 status=none | cmp - "$files/creation-time"
+    mdir -b -i "$image@@1048576" :: | grep -Fx '::/lower.txt'
+    dd if="$image" bs=1 skip=$((lower_entry + 12)) count=1 status=none | cmp - <(printf '\030')
+    mtype -i "$image@@1048576" ::lower.txt | cmp - <(printf 'Replacement\n')
+    mtype -i "$image@@1048576" ::HOST.TXT | cmp - <(printf 'Replacement\n')
+    mtype -i "$image@@1048576" ::LARGE.BIN | cmp - "$files/large.bin"
 
     cp --sparse=always "$files/disk.raw" "$files/cycle.raw"
     peer_high=$(od -An -tu2 -j $((peer_entry + 20)) -N 2 "$files/disk.raw")
@@ -326,57 +324,13 @@ if [[ $slice == all || $slice == fat32 ]]; then
         cycle_offset=$((1048576 + (fat_reserved + fat_index * fat_size) * 512 + peer_cluster * 4))
         printf '%b' "$self_link" | dd of="$files/cycle.raw" bs=1 seek="$cycle_offset" conv=notrunc status=none
     done
-    check_unchanged_image 'FAT32 refuses replacement if a file chain loops' "$files/cycle.raw" \
-        'FAT32 replacement refused: cluster ownership could not be verified\.'
-
-    cp --sparse=always "$files/disk.raw" "$files/large-peer.raw"
-    truncate -s 34M "$files/large.bin"
-    printf 'last sector' | dd of="$files/large.bin" bs=512 seek=$((34 * 2048 - 1)) conv=notrunc status=none
-    mcopy -i "$files/large-peer.raw@@1048576" "$files/large.bin" ::LARGE.BIN
-    run_guest 'FAT32 replacement beside an unrelated 34 MiB file' 1 64M check_fat_replace \
-        -machine pc -kernel "$kernel" -drive "file=$files/large-peer.raw,format=raw,if=ide,index=0"
-    mtype -i "$files/large-peer.raw@@1048576" ::HOST.TXT | cmp - <(printf 'Replacement\n')
-    mtype -i "$files/large-peer.raw@@1048576" ::LARGE.BIN | cmp - "$files/large.bin"
+    create_target=/disk/new.txt check_image_unchanged 'FAT32 refuses writes if a file chain loops' \
+        "$files/cycle.raw" check_fat_ownership_refusal
 
     printf 'First line\n%0600d\n' 1 > "$files/long.txt"
     tar --format=ustar -C "$files" -cf "$files/ramfs.tar" long.txt empty.txt
-    cp --sparse=always "$files/disk.raw" "$files/interrupted.raw"
-    QEMU_TEST_POWER_CUT=1 run_guest 'FAT32 interrupted before directory publication' 1 64M \
-        check_fat_interruption -machine pc -kernel "$build_dir/fat32-interrupt.elf" \
-        -initrd "$files/ramfs.tar" -drive "file=$files/interrupted.raw,format=raw,if=ide,index=0"
-    mtype -i "$files/interrupted.raw@@1048576" ::HOST.TXT | cmp - "$files/host.txt"
-    sha256sum "$files/interrupted.raw" > "$files/interrupted.sha"
-    run_guest 'FAT32 check reports orphans without writing' 1 64M check_fat_orphans \
-        -machine pc -kernel "$kernel" -drive "file=$files/interrupted.raw,format=raw,if=ide,index=0"
-    sha256sum --check --status "$files/interrupted.sha"
 
-    cp --sparse=always "$files/interrupted.raw" "$files/repair-mismatch.raw"
-    # The mismatch is in a later FAT sector than the orphaned chain.
-    mismatch_offset=$((1048576 + (fat_reserved + fat_size) * 512 + 50000 * 4))
-    printf '\377\377\377\017' | dd of="$files/repair-mismatch.raw" bs=1 seek="$mismatch_offset" conv=notrunc status=none
-    sha256sum "$files/repair-mismatch.raw" > "$files/repair-mismatch.sha"
-    repair_error='FAT32 check failed: FAT copies disagree\.' \
-        run_guest 'FAT32 repair refuses a late FAT mismatch' 1 64M check_fat_repair_refusal \
-        -machine pc -kernel "$kernel" -drive "file=$files/repair-mismatch.raw,format=raw,if=ide,index=0"
-    sha256sum --check --status "$files/repair-mismatch.sha"
-
-    cp --sparse=always "$files/interrupted.raw" "$files/repair-cross-link.raw"
-    copy_cluster_pointer "$files/repair-cross-link.raw" "$host_entry" "$nested_entry"
-    sha256sum "$files/repair-cross-link.raw" > "$files/repair-cross-link.sha"
-    repair_error='FAT32 check failed: cluster ownership could not be verified\.' \
-        run_guest 'FAT32 repair refuses a cross-linked directory tree' 1 64M check_fat_repair_refusal \
-        -machine pc -kernel "$kernel" -drive "file=$files/repair-cross-link.raw,format=raw,if=ide,index=0"
-    sha256sum --check --status "$files/repair-cross-link.sha"
-
-    run_guest 'FAT32 repair reclaims an interrupted replacement' 1 64M check_fat_repair \
-        -machine pc -kernel "$kernel" -drive "file=$files/interrupted.raw,format=raw,if=ide,index=0"
-    mtype -i "$files/interrupted.raw@@1048576" ::HOST.TXT | cmp - "$files/host.txt"
-    mtype -i "$files/interrupted.raw@@1048576" ::SUBDIR/NESTED.TXT | cmp - "$files/peer.txt"
-    # Both tables must match their contents before the interrupted write.
-    fat_lba=$((2048 + fat_reserved))
-    fat_sectors=$((fat_size * fat_count))
-    dd if="$files/interrupted.raw" bs=512 skip="$fat_lba" count="$fat_sectors" status=none |
-        cmp - <(dd if="$files/disk.raw" bs=512 skip="$fat_lba" count="$fat_sectors" status=none)
+    run_vfs_fixtures
 
     qemu-img convert -f raw -O qcow2 "$files/disk.raw" "$files/disk.qcow2"
     for format in raw qcow2; do

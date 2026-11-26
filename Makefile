@@ -5,9 +5,10 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o fat32.o gpt.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o)
+OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o fat32.o gpt.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o vfs.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
+FAT_FIXTURES := $(addprefix $(BUILD)/fat32-,interrupt.elf fault.elf overlap.elf)
 RAM     ?= 64M
 SMP     ?= 1
 INITRAMFS ?=
@@ -27,6 +28,7 @@ $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 
 $(BUILD)/kernel.o: $(BUILD)/build_id.inc
 $(BUILD)/fat32.o: src/fat32_check.inc
+$(BUILD)/fat32.o $(BUILD)/vfs.o: src/fat32_mount.inc
 
 $(BUILD)/build_id.inc: $(BUILD_ID_INPUTS) | $(BUILD)
 	@hash=$$(sha256sum $(BUILD_ID_INPUTS)) && \
@@ -79,23 +81,27 @@ test-smp: $(SMP_FIXTURES)
 test-ramfs: $(KERNEL) $(BUILD)/smp-fixture-one_page.elf
 	bash tests/ramfs_boot.sh "$(BUILD)"
 
-$(BUILD)/fat32-interrupt.o: tests/fat32_interrupt.asm | $(BUILD)
+$(BUILD)/fat32-%.o: tests/fat32_%.asm | $(BUILD)
 	$(NASM) -f elf64 $< -o $@
 
-$(BUILD)/fat32-interrupt.elf64: $(BUILD)/fat32-interrupt.o $(OBJECTS) src/linker.ld
-	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
-		--wrap=block_flush $(filter %.o,$^) -o $@
+$(BUILD)/fat32-interrupt.elf64: FAT_WRAPPERS := --wrap=block_flush
+$(BUILD)/fat32-fault.elf64: FAT_WRAPPERS := --wrap=block_write --wrap=block_flush
+$(BUILD)/fat32-overlap.elf64: FAT_WRAPPERS := --wrap=gpt_partition
 
-$(BUILD)/fat32-interrupt.elf: $(BUILD)/fat32-interrupt.elf64
+$(BUILD)/fat32-%.elf64: $(BUILD)/fat32-%.o $(OBJECTS) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		$(FAT_WRAPPERS) $(filter %.o,$^) -o $@
+
+$(BUILD)/fat32-%.elf: $(BUILD)/fat32-%.elf64
 	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
 
-test-storage: $(KERNEL) $(BUILD)/fat32-interrupt.elf
+test-storage: $(KERNEL) $(FAT_FIXTURES)
 	bash tests/storage_boot.sh "$(BUILD)"
 
 test-ata test-gpt: test-%: $(KERNEL)
 	bash tests/storage_boot.sh "$(BUILD)" "$*"
 
-test-fat32: $(KERNEL) $(BUILD)/fat32-interrupt.elf
+test-fat32: $(KERNEL) $(FAT_FIXTURES)
 	bash tests/storage_boot.sh "$(BUILD)" fat32
 
 test-network: $(KERNEL)

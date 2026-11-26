@@ -16,7 +16,7 @@ Use the peer's colon-separated MAC address and a four-digit hexadecimal EtherTyp
 
 ```text
 net info
-echo Hello Ethernet > payload.txt
+echo Hello Ethernet > /ram/payload.txt
 net send 52:54:00:AB:CD:EF 88B5 payload.txt
 ```
 

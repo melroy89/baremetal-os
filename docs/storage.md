@@ -4,28 +4,33 @@ For direct QEMU boot, add `-machine pc -drive file=disk.raw,format=raw,if=ide,in
 
 ## Disk commands
 
-| Command                     | Action                                                 |
-| --------------------------- | ------------------------------------------------------ |
-| `disk info`                 | Show the ATA model and disk capacity.                  |
-| `disk crc32 LBA`            | Checksum one sector by its zero-based decimal LBA.     |
-| `disk gpt`                  | List partitions and identify the GPT copy in use.      |
-| `disk mount N`              | Mount FAT32 on GPT partition `N`, starting at 1.       |
-| `disk ls`                   | List files on the mounted volume.                      |
-| `disk cat NAME`             | Print a file from disk.                                |
-| `disk put RAMFILE DISKFILE` | Copy a RAM file to disk, creating or replacing a file. |
-| `disk check`                | Count orphaned clusters without writing.               |
-| `disk repair`               | Reclaim clusters proven to be unreferenced.            |
-| `disk unmount`              | Flush writes and unmount the volume.                   |
+| Command                     | Action                                                        |
+| --------------------------- | ------------------------------------------------------------- |
+| `disk info`                 | Show the ATA model and disk capacity.                         |
+| `disk crc32 LBA`            | Checksum one sector by its zero-based decimal LBA.            |
+| `disk gpt`                  | List partitions and identify the GPT copy in use.             |
+| `disk mount N`              | Mount GPT partition `N` at `/disk`. Numbering starts at 1.    |
+| `disk ls`                   | List files and directories at `/disk`.                        |
+| `disk cat NAME`             | Print a file from `/disk`.                                    |
+| `disk put RAMFILE DISKFILE` | Copy a file from `/ram` to `/disk`, creating or replacing it. |
+| `disk check [PATH]`         | Count orphaned clusters without writing.                      |
+| `disk repair [PATH]`        | Reclaim clusters proven to be unreferenced.                   |
+| `disk unmount`              | Flush writes and unmount `/disk`.                             |
+| `mount [disk0pN /NAME]`     | List mounts or mount an IDE partition at `/NAME`.             |
+| `umount /NAME`              | Flush and unmount a named volume.                             |
 
 ## FAT32 example
 
-File commands use ASCII 8.3 names in the root directory, including aliases such as `LONGFI~1.TXT`.
+File commands work in existing FAT32 directories with ASCII 8.3 names. You can read and replace files through short aliases such as `LONGFI~1.TXT`. Files with long-name entries are protected from `rm`.
 
 ```text
 disk mount 1
-echo Saved on disk > note.txt
-disk put note.txt NOTE.TXT
-disk ls
-disk cat NOTE.TXT
+cd /disk
+echo "Saved on disk" > note.txt
+ls
+cat note.txt
+cd /
 disk unmount
 ```
+
+Use `mount disk0p2 /backup` for a second partition on the same disk. `disk check` and `disk repair` default to `/disk`. To select another volume, pass its mount point, such as `/backup` or `/backup/`.
