@@ -2,6 +2,8 @@
 
 A small standalone operating system written in x86-64 assembly (NASM). At startup, a Multiboot 1 bootloader hands control to the kernel in 32-bit mode. The kernel switches the CPU to 64-bit mode and opens a text console you can use with a screen and keyboard or through a serial terminal.
 
+![Bare Metal OS running in QEMU/KVM, showing the memory map and output from the version, help, and cpu commands](assets/baremetal-os.png)
+
 ## Installation and prerequisites
 
 On Debian, Ubuntu, or Linux Mint, install the build tools, then run `make` from the project directory.
@@ -15,7 +17,7 @@ The kernel is `build/baremetal-os.elf`. It runs on x86-64 and can boot in a disk
 
 ### Run directly with QEMU/KVM
 
-This option needs QEMU and access to `/dev/kvm`.
+This option runs entirely in your terminal and needs QEMU and access to `/dev/kvm`.
 
 ```sh
 sudo apt install qemu-system-x86
@@ -47,7 +49,9 @@ qemu-system-x86_64 -m 64M -nic none -cdrom build/baremetal-os.iso \
 
 For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/share/ovmf/OVMF.fd`. The firmware path may vary by distribution.
 
-## Virtual Machine Manager
+## Run with libvirt
+
+Use `virt-install` and `virsh` to manage a QEMU/KVM guest from the terminal. Virtual Machine Manager (`virt-manager`) is an optional graphical interface for the same libvirt guest.
 
 ### Create the guest
 
@@ -66,7 +70,9 @@ virt-install --connect qemu:///system --name baremetal-os --import \
   --boot "kernel=$kernel_path" --noautoconsole
 ```
 
-Open **baremetal-os** under the **QEMU/KVM** system connection in Virtual Machine Manager. The guest has no attached disk or ISO. Click **Run** to start it again after shutdown. Enter `halt` at the `baremetal>` prompt to power off.
+Connect to the running guest's serial console with `virsh -c qemu:///system console baremetal-os`. Press Enter to show the prompt and `Ctrl+]` to detach. To start a powered-off guest and connect in one step, run `virsh -c qemu:///system start baremetal-os --console`.
+
+For the graphical console, open **baremetal-os** under the **QEMU/KVM** system connection in Virtual Machine Manager. Enter `halt` at the `baremetal>` prompt to power off from either console.
 
 ### Update the kernel
 
@@ -76,6 +82,14 @@ Power off the existing guest before uploading a rebuilt ELF to its volume.
 make
 virsh -c qemu:///system vol-upload --pool default baremetal-os-kernel.elf build/baremetal-os.elf
 ```
+
+## Boot the ISO in Proxmox VE
+
+1. Upload `build/baremetal-os.iso` to storage that accepts **ISO Images**.
+2. Create a VM with one vCPU, 512 MiB of RAM, and a CD/DVD drive using the uploaded ISO. You can omit the guest hard disk and network device. Put the CD/DVD drive first in the boot order.
+3. Choose **SeaBIOS**, start the VM, and open its graphical console.
+
+For **OVMF (UEFI)**, disable Secure Boot, leave **Pre-Enroll keys** unchecked if you add an EFI disk, and add a serial port backed by a socket. Start the VM and connect from the Proxmox host with `qm terminal VMID`, replacing `VMID` with the VM's ID. [Proxmox VE VM configuration guide](https://pve.proxmox.com/pve-docs/chapter-qm.html)
 
 ## Console
 
