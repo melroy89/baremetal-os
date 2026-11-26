@@ -12,9 +12,10 @@ console_check() {
 
 check_ext2() {
     expect_serial 'baremetal> '
-    console_check 'mount -t ext2 disk0p1 /ext' 'Ext2 mounted read-only\.'
+    console_check 'mount -t ext2 disk0p1 /ext' 'Ext2 features require a read-only mount'
+    console_check 'mount -t ext2 -o ro disk0p1 /ext' 'Ext2 mounted read-only\.'
     console_check 'mount disk0p2 /disk' 'FAT32 mounted\.'
-    console_check 'mount -t ext2 disk0p1 /duplicate' 'Partition overlaps an active mount\.'
+    console_check 'mount -t ext2 -o ro disk0p1 /duplicate' 'Partition overlaps an active mount\.'
     console_check 'ls /ext' 'Nested/'
     console_check 'cd /ext/Nested' 'cd /ext/Nested'
     console_check 'pwd' $'\r?\n/ext/Nested\r?\n'
@@ -24,8 +25,8 @@ check_ext2() {
     console_check 'ls /ext/Wide' 'entry175'
     console_check 'cd /ext/Indexed' 'Indexed ext2 directories are unsupported\.'
     console_check 'ls /ext/Broken' 'Invalid ext2 metadata or block pointer\.'
-    console_check 'mount -t ext2 disk0p3 /other' 'Unsupported or invalid ext2 volume\.'
-    console_check 'mount -t ext2 disk0p4 /dirty' 'Unsupported or invalid ext2 volume\.'
+    console_check 'mount -t ext2 -o ro disk0p3 /other' 'Unsupported or invalid ext2 volume\.'
+    console_check 'mount -t ext2 -o ro disk0p4 /dirty' 'Unsupported or invalid ext2 volume\.'
 
     console_check 'cp /ext/Nested/Note.txt /ram/note' 'cp /ext/Nested/Note\.txt'
     console_check 'cat /ram/note' $'\r?\nExt2 payload\r?\n'

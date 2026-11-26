@@ -177,7 +177,7 @@ ip_info:
 .mode:
     call    console_write_cstr
     cmp     dword [rel ip_address], 0
-    je      .done
+    je      .pending
     lea     rdi, [rel address_text]
     call    console_write_cstr
     mov     edi, [rel ip_address]
@@ -205,6 +205,12 @@ ip_info:
     call    print_ip
     mov     edi, 10
     call    console_putc
+    jmp     .done
+.pending:
+    cmp     ebx, MODE_DHCP
+    jne     .done
+    lea     rdi, [rel acquiring_text]
+    call    console_write_cstr
 .done:
     pop     rbx
     ret
@@ -897,6 +903,7 @@ ping_usage: db "Usage: ping ADDRESS or NAME", 10, 0
 raw_text: db "IPv4: off", 10, 0
 static_text: db "IPv4: static", 10, 0
 dhcp_text: db "IPv4: DHCP", 10, 0
+acquiring_text: db "Acquiring address", 10, 0
 address_text: db "Address: ", 0
 gateway_text: db 10, "Gateway: ", 0
 dns_text: db 10, "DNS: ", 0

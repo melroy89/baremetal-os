@@ -1,4 +1,4 @@
-; Read-only ext2 with 4 KiB blocks and legacy block pointers.
+; Ext2 with 4 KiB blocks and legacy block pointers.
 bits 64
 default rel
 
@@ -25,6 +25,7 @@ struc ext_inode
 endstruc
 
 extern vfs_mount_partition, block_read
+extern block_write, block_flush, page_alloc, page_free, ip_checkpoint
 extern console_write, console_write_cstr, console_putc
 
 section .text
@@ -58,10 +59,13 @@ ext_mount:
     jne     .bad
     cmp     dword [rbx + 76], 1
     ja      .bad
+    mov     dword [rbp + mount_volume.ext_first_inode], 11
     mov     ecx, 128
     cmp     dword [rbx + 76], 0
     je      .inode_size
     movzx   ecx, word [rbx + 88]
+    mov     edx, [rbx + 84]
+    mov     [rbp + mount_volume.ext_first_inode], edx
     cmp     ecx, 128
     je      .inode_size
     cmp     ecx, 256
@@ -70,6 +74,11 @@ ext_mount:
     mov     [rbp + mount_volume.ext_inode_size], ecx
     test    dword [rbx + 92], ~0x38     ; xattr, resize_inode, dir_index
     jnz     .bad
+    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    jne     .read_features
+    cmp     dword [rbx + 92], 0
+    jne     .write_features
+.read_features:
     mov     eax, [rbx + 96]
     test    eax, ~EXT_FILETYPE
     jnz     .bad
@@ -114,6 +123,7 @@ ext_mount:
     xor     edx, edx
     div     ecx
     inc     eax                        ; Block groups, rounded up.
+    mov     [rbp + mount_volume.ext_groups], eax
     imul    rsi, rax
     mov     ecx, [rbx]
     cmp     ecx, EXT_ROOT
@@ -129,12 +139,26 @@ ext_mount:
     call    ext_root
     test    rax, rax
     jnz     .done
+    mov     byte [rbp + mount_volume.write_error], 0
+    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    jne     .publish
+    call    ext_verify_allocations
+    test    rax, rax
+    jnz     .done
+    xor     edi, edi
+    call    ext_set_state
+    test    rax, rax
+    jnz     .done
+.publish:
     mov     byte [rbp + mount_volume.mounted], 1
 .done:
     pop     rbx
     ret
 .bad:
     lea     rax, [rel bad_super]
+    jmp     .done
+.write_features:
+    lea     rax, [rel rw_features_error]
     jmp     .done
 
 ; rdi = volume-relative sector, rsi = destination.
@@ -655,3 +679,6 @@ file_inode: resb ext_inode_size
 metadata: resb BLOCK_SIZE
 dir_data: resb EXT_BLOCK
 file_sector: resb BLOCK_SIZE
+
+%include "ext2_verify.inc"
+%include "ext2_write.inc"

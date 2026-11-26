@@ -23,6 +23,7 @@ struc mount_volume
     .write_error:         resb 1
     .name:                resb VOLUME_MOUNT_NAME_SIZE
     .type:                resb 1
+    .ext_readonly:        resb 1
     alignb 4
     .ext_blocks:          resd 1
     .ext_inodes:          resd 1
@@ -32,5 +33,7 @@ struc mount_volume
     .ext_inode_blocks:    resd 1
     .ext_gdt_blocks:      resd 1
     .ext_features:        resd 1
+    .ext_groups:          resd 1
+    .ext_first_inode:     resd 1
     alignb 8
 endstruc

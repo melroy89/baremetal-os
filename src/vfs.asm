@@ -23,14 +23,18 @@ endstruc
 extern ramfs_ls, ramfs_cat, ramfs_write, ramfs_rm, ramfs_touch
 extern fat_mount, fat_unmount, fat_list, fat_cat
 extern fat_write, fat_rm, fat_touch, fat_find_dir, fat_check, fat_repair
+extern fat_mkdir
 extern fat_validate_root
 extern ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
+extern ext_write, ext_touch, ext_finish, fat_finish
 extern console_write, parse_lba, crc32_update, write_hex32_raw
 extern gpt_load, gpt_partition
 extern console_write_cstr, console_putc, str_eq
 
 section .text
 global command_ls, command_cat, command_rm, command_touch, command_cd, command_pwd
+global command_mkdir
+global vfs_shutdown
 global vfs_write, command_mount, command_umount, vfs_mount_partition
 global disk_check_volume, disk_repair_volume
 
@@ -95,14 +99,23 @@ command_rm:
     lea     rsi, [rel rm_handlers]
     jmp     file_command
 
+command_mkdir:
+    cmp     byte [rdi], 0
+    je      mkdir_missing
+    lea     rsi, [rel mkdir_handlers]
+    mov     edx, 2
+    jmp     dispatch_operand
+
 command_touch:
     cmp     byte [rdi], 0
     je      touch_missing
     lea     rsi, [rel touch_handlers]
 file_command:
+    mov     edx, 1
+dispatch_operand:
     push    rbx
     mov     rbx, rsi
-    mov     esi, 1
+    mov     esi, edx
     call    resolve_path
     test    rax, rax
     jnz     .error
@@ -148,14 +161,14 @@ vfs_write:
     je      .ram
     mov     rbp, rax
     cmp     byte [rbp + mount_volume.type], FS_EXT2
-    je      .readonly
+    je      .ext
     call    fat_write
     jmp     .done
 .ram:
     call    ramfs_write
     jmp     .done
-.readonly:
-    call    ext_readonly
+.ext:
+    call    ext_write
 .done:
     pop     r13
     pop     r12
@@ -167,8 +180,8 @@ vfs_write:
     pop     rbp
     jmp     print_error
 
-; esi = 1 for a file operand, 0 for a directory. Resolve components in order.
-; File resolution leaves the last component intact for backend validation.
+; esi = 0 for directory lookup, 1 for a file operand, 2 for mkdir.
+; File and mkdir resolution leave the final name for backend validation.
 resolve_path:
     push    rbx
     push    r12
@@ -229,10 +242,23 @@ resolve_path:
     call    work_location
     test    r13d, r13d
     jz      .directory
+    cmp     r13d, 2
+    jne     .operand_end
+.skip_operand_slash:
+    cmp     byte [r12], '/'
+    jne     .operand_end
+    inc     r12
+    jmp     .skip_operand_slash
+.operand_end:
     cmp     byte [r12], 0
     jne     .directory
     test    rax, rax
     jz      .is_directory
+    cmp     r13d, 2
+    jne     .operand_length
+    cmp     qword [rbx + path_state.depth], PATH_DEPTH
+    jae     .long
+.operand_length:
     call    work_level
     mov     ecx, [rax + location.length]
     lea     eax, [rcx + r14 + 1]
@@ -469,6 +495,12 @@ command_mount:
     jne     mount_usage
     add     rdi, 8
     mov     edx, FS_EXT2
+    cmp     dword [rdi], '-o r'
+    jne     .device
+    cmp     word [rdi + 4], 'o '
+    jne     mount_usage
+    add     rdi, 6
+    or      edx, 0x100
 .device:
     cmp     dword [rdi], 'disk'
     jne     mount_usage
@@ -496,7 +528,7 @@ command_mount:
     push    r12
     push    r13
     sub     rsp, 16
-    mov     [rsp], dl
+    mov     [rsp], dx
     mov     r12, rdi
     mov     r13, rsi
     xor     ecx, ecx
@@ -555,8 +587,10 @@ command_mount:
     mov     dword [rbp + mount_volume.device], 0
     mov     al, [rsp]
     mov     [rbp + mount_volume.type], al
+    mov     al, [rsp + 1]
+    mov     [rbp + mount_volume.ext_readonly], al
     mov     rdi, r12
-    cmp     al, FS_EXT2
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
     je      .ext_mount
     call    fat_mount
     jmp     .mounted
@@ -565,6 +599,10 @@ command_mount:
     test    rax, rax
     jnz     .error
     lea     rdi, [rel ext_mounted]
+    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    jne     .ext_message
+    lea     rdi, [rel ext_mounted_rw]
+.ext_message:
     call    console_write_cstr
 .mounted:
     add     rsp, 16
@@ -642,12 +680,55 @@ command_umount:
     pop     rbp
     ret
 .ext:
-    mov     byte [rax + mount_volume.mounted], 0
+    push    rbp
+    mov     rbp, rax
+    call    ext_finish
+    pop     rbp
+    test    rax, rax
+    jnz     print_error
     lea     rdi, [rel ext_unmounted]
     jmp     console_write_cstr
 .busy:
     lea     rdi, [rel mount_in_use]
     jmp     console_write_cstr
+
+; Close all mounts before a guest-requested power transition.
+vfs_shutdown:
+    push    rbp
+    push    rbx
+    sub     rsp, 8
+    lea     rbp, [rel mounts]
+    mov     ebx, VOLUME_MOUNT_COUNT
+.next:
+    cmp     byte [rbp + mount_volume.mounted], 0
+    je      .advance
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    je      .ext
+    call    fat_finish
+    jmp     .check
+.ext:
+    call    ext_finish
+.check:
+    cmp     byte [rbp + mount_volume.mounted], 0
+    jne     .result
+    mov     rcx, [rel current_path + path_state.levels + location_size + location.volume]
+    cmp     rcx, rbp
+    jne     .result
+    mov     qword [rel current_path + path_state.depth], 0
+    mov     byte [rel current_path + path_state.text], 0
+.result:
+    test    rax, rax
+    jnz     .done
+.advance:
+    add     rbp, mount_volume_size
+    dec     ebx
+    jnz     .next
+    xor     eax, eax
+.done:
+    add     rsp, 8
+    pop     rbx
+    pop     rbp
+    ret
 
 %macro disk_wrapper 3
 %1:
@@ -716,6 +797,12 @@ cat_missing:
 rm_missing:
     lea     rdi, [rel rm_help]
     jmp     console_write_cstr
+mkdir_missing:
+    lea     rdi, [rel mkdir_help]
+    jmp     console_write_cstr
+mkdir_unsupported:
+    lea     rdi, [rel mkdir_fat_only]
+    jmp     console_write_cstr
 touch_missing:
     lea     rdi, [rel touch_help]
     jmp     console_write_cstr
@@ -729,7 +816,9 @@ cd_help:        db "Usage: cd PATH", 10, 0
 cat_help:       db "Usage: cat FILE", 10, 0
 rm_help:        db "Usage: rm FILE", 10, 0
 touch_help:     db "Usage: touch PATH", 10, 0
-mount_help:     db "Usage: mount [[-t ext2] disk0pN /NAME] or umount /NAME", 10, 0
+mkdir_help:     db "Usage: mkdir PATH", 10, 0
+mkdir_fat_only: db "mkdir requires a writable FAT32 mount.", 10, 0
+mount_help:     db "Usage: mount [[-t ext2 [-o ro]] disk0pN /NAME] or umount /NAME", 10, 0
 mount_taken:    db "Mount point is already in use.", 10, 0
 mount_full:     db "No free volume mount slots.", 10, 0
 mount_in_use:   db "Current directory is on this volume. Change directory first.", 10, 0
@@ -741,6 +830,7 @@ path_directory: db "Expected a file path, found a directory.", 10, 0
 path_long:      db "Path is too long or has too many components.", 10, 0
 
 ext_mounted: db "Ext2 mounted read-only.", 10, 0
+ext_mounted_rw: db "Ext2 mounted read-write.", 10, 0
 ext_unmounted: db "Ext2 unmounted.", 10, 0
 ext_readonly_text: db "Ext2 is read-only.", 10, 0
 ext_check: db "disk check requires a FAT32 volume.", 10, 0
@@ -748,7 +838,8 @@ ext_check: db "disk check requires a FAT32 volume.", 10, 0
 align 8
 cat_handlers: dq ramfs_cat, fat_cat, ext_cat
 rm_handlers:  dq ramfs_rm, fat_rm, ext_readonly
-touch_handlers: dq ramfs_touch, fat_touch, ext_readonly
+touch_handlers: dq ramfs_touch, fat_touch, ext_touch
+mkdir_handlers: dq mkdir_unsupported, fat_mkdir, mkdir_unsupported
 
 section .bss
 alignb 8

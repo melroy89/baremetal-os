@@ -57,7 +57,7 @@ command_cp:
     je      .to_ram
     mov     rbp, rax
     cmp     byte [rbp + mount_volume.type], FS_EXT2
-    je      .readonly
+    je      .to_ext
     mov     ecx, edx
     mov     rdx, r14
     cmp     r15, RAM_MOUNT
@@ -97,6 +97,35 @@ command_cp:
     mov     rdx, r14
     call    ramfs_write
     jmp     .done
+.to_ext:
+    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    jne     .readonly
+    cmp     r14, 48 * 1024
+    ja      .large_ext
+    mov     r13d, edx
+    cmp     r15, RAM_MOUNT
+    je      .write_ext
+    lea     rbx, [rel copy_ext_buffer]
+    xor     r12d, r12d
+.ext_chunk:
+    cmp     r12, r14
+    jae     .write_ext
+    lea     rdi, [rbx + r12]
+    call    [rel reader_chunk]
+    test    rax, rax
+    jnz     .error
+    add     r12, BLOCK_SIZE
+    jmp     .ext_chunk
+.write_ext:
+    lea     rdi, [rel component]
+    mov     rsi, rbx
+    mov     rdx, r14
+    mov     ecx, r13d
+    call    ext_write
+    jmp     .done
+.large_ext:
+    lea     rax, [rel copy_large_ext]
+    jmp     .error
 .readonly:
     call    ext_readonly
     jmp     .done
@@ -189,7 +218,9 @@ section .rodata
 copy_usage:     db "Usage: cp SOURCE DEST", 10, 0
 copy_same_ram:  db "Source and destination are the same file.", 10, 0
 copy_large_ram: db "File is too large for the RAM filesystem.", 10, 0
+copy_large_ext: db "Ext2 create limit is 48 KiB.", 10, 0
 
 section .bss
 alignb 16
 copy_ram_buffer: resb PAGE_SIZE
+copy_ext_buffer: resb 48 * 1024

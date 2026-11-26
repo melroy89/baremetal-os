@@ -1,6 +1,6 @@
 # Ethernet and IPv4
 
-Attach QEMU's `e1000` adapter. DHCP starts in the background at boot once the adapter initializes. Use `net info` to check for an address.
+Attach a modern virtio-net or QEMU `e1000` adapter. The kernel prefers a usable virtio-net device and starts DHCP in the background once the selected adapter initializes. Use `net info` to check which driver is active and whether an address has been assigned.
 
 | Command                               | Action                                                          |
 | ------------------------------------- | --------------------------------------------------------------- |
@@ -16,7 +16,7 @@ Attach QEMU's `e1000` adapter. DHCP starts in the background at boot once the ad
 
 ## Try IPv4 in QEMU
 
-For direct boot with QEMU's user network, replace `-nic none` with `-nic user,model=e1000`. Then try:
+For direct boot with QEMU's user network, replace `-nic none` with `-netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on`. To use e1000, use `-nic user,model=e1000`. Then try:
 
 ```text
 net info
@@ -36,3 +36,4 @@ net send 52:54:00:AB:CD:EF 88B5 payload.txt
 ```
 
 Run `make test-network` for the isolated QEMU stream tests. On a Linux host with KVM, TUN/TAP, and user namespaces, `make test-network-tap` checks ping in both directions.
+Run `make bench-network` on that host to compare the two drivers over TAP with the same polling cadence.

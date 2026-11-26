@@ -76,10 +76,15 @@ icmp_packet() {
     ip_packet 01 "$source" "$guest_ip" "${type}00$checksum$tail"
 }
 
-start_wire() {
+connect_wire() {
+    # Open both ends of each FIFO while socat connects to the Unix socket.
     exec {wire_in}<>"$files/to-guest" {wire_out}<>"$files/from-guest"
-    timeout 100 socat - "UNIX-CONNECT:$files/wire" <&"$wire_in" >&"$wire_out" &
+    timeout "$1" socat - "UNIX-CONNECT:$files/wire" <&"$wire_in" >&"$wire_out" &
     peer=$!
+}
+
+start_wire() {
+    connect_wire 100
     local attempt
     for attempt in {1..20}; do
         printf 'net info\r' >&"$serial_write"
@@ -120,6 +125,7 @@ check_bulk_output() {
     assert_icmp_frame "$frame" "$guest_ip" "$peer_ip" 00
     [[ ! -e $files/bulk-ended ]]
     wait "$drain"
+    unlink "$files/bulk-ended"
     expect_serial 'baremetal> '
 }
 
@@ -137,6 +143,7 @@ check_ram_checksum() {
     assert_icmp_frame "$frame" "$guest_ip" "$peer_ip" 00
     [[ ${frame:76:8} == "$echo_id" && ! -e $files/checksum-ended-$echo_id ]]
     wait "$drain"
+    unlink "$files/checksum-ended-$echo_id"
     expect_serial 'baremetal> '
 }
 

@@ -11,6 +11,8 @@ default rel
 %define FAT_END_MARKER   0x0FFFFFFF
 %define FAT_ENTRY_SIZE   32
 %define FAT_ATTR_READ_ONLY 0x01
+%define FAT_ATTR_DIRECTORY 0x10
+%define STORE_DIRECTORY 2
 
 extern block_read
 extern vfs_mount_partition
@@ -25,8 +27,10 @@ global fat_mount
 global fat_list
 global fat_cat
 global fat_unmount
+global fat_finish
 global fat_write
 global fat_touch
+global fat_mkdir
 global fat_copy_open, fat_copy_chunk, fat_copy_write
 global fat_copy_seek
 global fat_rm
@@ -147,17 +151,27 @@ fat_mount:
 fat_unmount:
     cmp     byte [rbp + mount_volume.mounted], 0
     je      print_unmounted
+    sub     rsp, 8
+    call    fat_finish
+    add     rsp, 8
+    test    rax, rax
+    jnz     print_error
+    lea     rdi, [rel unmounted_text]
+    jmp     console_write_cstr
+
+fat_finish:
     cmp     byte [rbp + mount_volume.pending_write], 0
     je      .clear
     sub     rsp, 8
     call    block_flush
     add     rsp, 8
     test    rax, rax
-    jnz     print_error
+    jnz     .done
 .clear:
     mov     byte [rbp + mount_volume.mounted], 0
-    lea     rdi, [rel unmounted_text]
-    jmp     console_write_cstr
+    xor     eax, eax
+.done:
+    ret
 
 fat_list:
     cmp     byte [rbp + mount_volume.mounted], 0
@@ -641,6 +655,14 @@ fat_touch:
     jmp     fat_store
 
 ; rdi = name, rsi = bytes, rdx = count, ecx = parent cluster (zero for root).
+fat_mkdir:
+    mov     ecx, esi
+    lea     rsi, [rel new_dot_entries]
+    mov     edx, 2 * FAT_ENTRY_SIZE
+    mov     r8d, STORE_DIRECTORY
+    xor     r9d, r9d
+    jmp     fat_store
+
 fat_write:
     xor     r9d, r9d
     jmp     fat_write_mode
@@ -667,6 +689,11 @@ fat_store:
     call    short_name
     jc      .name
     mov     [rel new_size], r13d
+    cmp     dword [rsp], STORE_DIRECTORY
+    jne     .scan
+    mov     dword [rel new_size], 0
+    mov     [rel new_parent], ebx
+.scan:
     xor     edi, edi
     mov     esi, ebx
     call    scan_directory
@@ -680,6 +707,8 @@ fat_store:
     mov     dword [rel old_head], 0
     cmp     byte [rel slot_found], 0
     je      .verify
+    cmp     dword [rsp], STORE_DIRECTORY
+    je      .exists
     cmp     dword [rsp], 0
     jne     .touch_existing
     lea     rax, [rel fat_copy_chunk]
@@ -728,6 +757,10 @@ fat_store:
     test    r14d, r14d
     jnz     .append
     mov     [rel new_head], r15d
+    cmp     dword [rsp], STORE_DIRECTORY
+    jne     .write_cluster
+    mov     edi, r15d
+    call    init_dot_entries
     jmp     .write_cluster
 .append:
     mov     edi, r14d
@@ -829,6 +862,10 @@ fat_store:
     and     al, 0x06                 ; Keep hidden and system on replacement.
 .set_attributes:
     or      al, 0x20                 ; Mark new or modified files for archiving.
+    cmp     dword [rsp], STORE_DIRECTORY
+    jne     .store_attributes
+    mov     al, FAT_ATTR_DIRECTORY
+.store_attributes:
     mov     [rbx + 11], al
     mov     word [rbx + 22], 0
     mov     word [rbx + 18], 0x21
@@ -854,10 +891,18 @@ fat_store:
     test    rax, rax
     jnz     .write_error
     mov     byte [rbp + mount_volume.pending_write], 0
+    cmp     dword [rsp], STORE_DIRECTORY
+    je      .directory_saved
     cmp     dword [rsp], 0
     jne     .done
     lea     rdi, [rel saved_text]
     jmp     .print
+.directory_saved:
+    lea     rdi, [rel directory_saved]
+    jmp     .print
+.exists:
+    lea     rax, [rel directory_exists]
+    jmp     .error
 
 .no_space:
     lea     rax, [rel volume_full]
@@ -1062,6 +1107,19 @@ verify_file_slot:
     ret
 .read_only:
     lea     rax, [rel file_read_only]
+    ret
+
+; The common writer pads the rest of the new cluster with zeros.
+init_dot_entries:
+    lea     rdx, [rel new_dot_entries]
+    mov     eax, edi
+    mov     [rdx + 26], ax
+    shr     eax, 16
+    mov     [rdx + 20], ax
+    mov     eax, [rel new_parent]
+    mov     [rdx + FAT_ENTRY_SIZE + 26], ax
+    shr     eax, 16
+    mov     [rdx + FAT_ENTRY_SIZE + 20], ax
     ret
 
 prepare_mutation:
@@ -1407,9 +1465,23 @@ volume_full:        db "FAT32 volume is full.", 10, 0
 same_copy_file:     db "Source and destination are the same file.", 10, 0
 file_large:         db "File is too large for this FAT32 writer.", 10, 0
 saved_text:         db "Disk file saved.", 10, 0
+directory_saved:    db "Directory created.", 10, 0
+directory_exists:   db "File or directory already exists.", 10, 0
 blocked_text:       db "FAT32 writes stopped after an I/O error.", 10, 0
 
+section .data
+%macro dot_entry 1
+    db %1, FAT_ATTR_DIRECTORY, 0, 0
+    dw 0, 0x21, 0x21, 0, 0, 0x21, 0
+    dd 0
+%endmacro
+new_dot_entries:
+    dot_entry ".          "
+    dot_entry "..         "
+
 section .bss
+alignb 8
+new_parent:           resd 1
 alignb 8
 copy_volume:          resq 1
 copy_entry_lba:       resq 1

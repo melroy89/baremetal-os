@@ -51,13 +51,17 @@ extern console_write_cstr
 extern format_hex_raw
 extern write_u64
 extern ip_command, ip_info, ip_mode, ip_usage
+extern virtio_init, virtio_shutdown, virtio_link
+extern virtio_rx_poll, virtio_rx_boundary, virtio_rx_recycle
+extern virtio_tx_submit, virtio_tx_complete
 
 section .text
 global command_net
 global net_frame_receive
 global net_frame_send
 global net_init, net_mac, net_rx_poll, net_tx_submit, net_tx_complete
-global net_rx_boundary, net_rx_recycle
+global net_rx_boundary, net_rx_recycle, net_shutdown
+global nic_bdf, tx_busy, invalid_frame, invalid_tx_size, link_down_error
 
 command_net:
     push    rbx
@@ -142,13 +146,20 @@ command_net:
     call    console_write_cstr
     lea     rdi, [rel nic_mac]
     call    print_mac
-    mov     rax, [rel nic_mmio]
+    call    net_link
     lea     rdi, [rel link_up]
-    test    dword [rax + REG_STATUS], 2
+    test    eax, eax
     jnz     .print_info
     lea     rdi, [rel link_down]
 .print_info:
     call    console_write_cstr
+    lea     rdi, [rel e1000_driver]
+    cmp     byte [rel backend], 2
+    jne     .driver
+    lea     rdi, [rel virtio_driver]
+.driver:
+    call    console_write_cstr
+    call    net_tx_complete
     call    ip_info
     jmp     .done
 .receive:
@@ -207,9 +218,12 @@ require_link:
     add     rsp, 8
     test    rax, rax
     jnz     .done
-    mov     rdx, [rel nic_mmio]
-    test    dword [rdx + REG_STATUS], 2
-    jnz     .done
+    call    net_link
+    test    eax, eax
+    jz      .down
+    xor     eax, eax
+    ret
+.down:
     lea     rax, [rel link_down_error]
 .done:
     ret
@@ -224,6 +238,60 @@ find_nic:
     ret
 
 net_init:
+    cmp     byte [rel backend], 0
+    jne     .ready
+    push    rbx
+    call    virtio_init
+    test    rax, rax
+    jz      .virtio
+    mov     rbx, rax
+    call    e1000_init
+    test    rax, rax
+    jnz     .fallback_error
+    mov     byte [rel backend], 1
+    jmp     .done
+.fallback_error:
+    cmp     rbx, 1
+    cmovne  rax, rbx
+    jmp     .done
+.virtio:
+    mov     byte [rel backend], 2
+.done:
+    pop     rbx
+    ret
+.ready:
+    xor     eax, eax
+    ret
+
+net_link:
+    cmp     byte [rel backend], 2
+    je      virtio_link
+    mov     rax, [rel nic_mmio]
+    mov     eax, [rax + REG_STATUS]
+    shr     eax, 1
+    and     eax, 1
+    ret
+
+net_shutdown:
+    cmp     byte [rel backend], 2
+    je      virtio_shutdown
+    mov     rax, [rel nic_mmio]
+    test    rax, rax
+    jz      .done
+    mov     dword [rax + REG_RCTL], 0
+    mov     dword [rax + REG_TCTL], 0
+    mov     edi, [rel nic_bdf]
+    mov     esi, PCI_CMD
+    sub     rsp, 8
+    call    pci_config_read32
+    add     rsp, 8
+    movzx   edx, ax
+    and     edx, ~4
+    jmp     set_command
+.done:
+    ret
+
+e1000_init:
     cmp     qword [rel nic_mmio], 0
     jne     .ready
     push    rbx
@@ -437,6 +505,8 @@ receive_frame:
     call    require_link
     test    rax, rax
     jnz     .done
+    cmp     byte [rel backend], 2
+    je      .virtio
     mov     r12d, [rel rx_next]
     mov     ebx, r12d
     shl     ebx, 4
@@ -490,9 +560,45 @@ receive_frame:
     jmp     .done
 .timeout:
     lea     rax, [rel rx_timeout]
+    jmp     .done
+.virtio:
+    mov     rdi, r13
+    mov     rsi, r14
+    test    r15d, r15d
+    jz      .virtio_poll
+    call    wait_virtio_rx
+    jmp     .done
+.virtio_poll:
+    call    virtio_rx_poll
 .done:
     pop     r15
     pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+wait_virtio_rx:
+    push    rbx
+    push    r12
+    push    r13
+    mov     rbx, rdi
+    mov     r12, rsi
+    call    timer_ns
+    lea     r13, [rax + NET_WAIT_NS]
+.next:
+    mov     rdi, rbx
+    mov     rsi, r12
+    call    virtio_rx_poll
+    test    rax, rax
+    jnz     .done
+    test    edx, edx
+    jnz     .done
+    call    timer_ns
+    cmp     rax, r13
+    jb      .next
+    lea     rax, [rel rx_timeout]
+.done:
     pop     r13
     pop     r12
     pop     rbx
@@ -502,24 +608,35 @@ receive_frame:
 ; Return error string or zero with the padded byte count in edx.
 net_frame_send:
     push    rbx
+    push    r12
+    sub     rsp, 8
     call    net_tx_submit
     test    rax, rax
     jnz     .done
     mov     ebx, edx
-    mov     rdi, [rel tx_pending]
-    add     rdi, 12
-    call    wait_descriptor
-    jc      .timeout
+    call    timer_ns
+    lea     r12, [rax + NET_WAIT_NS]
+.next:
     call    net_tx_complete
-    mov     edx, ebx
-.done:
-    pop     rbx
-    ret
-.timeout:
+    lea     rcx, [rel tx_busy]
+    cmp     rax, rcx
+    jne     .complete
+    call    timer_ns
+    cmp     rax, r12
+    jb      .next
     lea     rax, [rel tx_timeout]
     jmp     .done
+.complete:
+    mov     edx, ebx
+.done:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
 
 net_tx_complete:
+    cmp     byte [rel backend], 2
+    je      virtio_tx_complete
     mov     rcx, [rel tx_pending]
     xor     eax, eax
     test    rcx, rcx
@@ -551,6 +668,8 @@ net_tx_submit:
     call    require_link
     test    rax, rax
     jnz     .done
+    cmp     byte [rel backend], 2
+    je      .virtio
     call    net_tx_complete
     cmp     qword [rel tx_pending], 0
     jne     .done
@@ -585,6 +704,11 @@ net_tx_submit:
     mov     [rdx + REG_TDT], eax
     mov     edx, r13d
     xor     eax, eax
+    jmp     .done
+.virtio:
+    mov     rdi, r12
+    mov     rsi, r13
+    call    virtio_tx_submit
     jmp     .done
 .invalid:
     lea     rax, [rel invalid_tx_size]
@@ -732,6 +856,8 @@ print_bdf:
 
 ; Snapshot completed descriptors without returning ownership to the NIC.
 net_rx_boundary:
+    cmp     byte [rel backend], 2
+    je      virtio_rx_boundary
     xor     eax, eax
     cmp     qword [rel nic_mmio], 0
     je      .done
@@ -752,6 +878,8 @@ net_rx_boundary:
 
 ; edi = count from net_rx_boundary. No dispatch during this operation.
 net_rx_recycle:
+    cmp     byte [rel backend], 2
+    je      virtio_rx_recycle
     test    edi, edi
     jz      .done
     mov     r8, [rel nic_mmio]
@@ -776,6 +904,8 @@ net_rx_recycle:
 
 section .rodata
 raw_only:        db "Raw Ethernet commands require net off.", 10, 0
+e1000_driver:    db "Driver: e1000", 10, 0
+virtio_driver:   db "Driver: virtio-net", 10, 0
 info_arg:        db "info", 0
 recv_arg:        db "recv", 0
 no_nic:          db "QEMU e1000 NIC unavailable.", 10, 0
@@ -815,5 +945,6 @@ ether_type:  resw 1
 nic_bdf:     resd 1
 rx_next:     resd 1
 tx_next:     resd 1
+backend:     resb 1
 
 console_frame: resb FRAME_HDR + PAYLOAD_MAX

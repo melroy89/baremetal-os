@@ -214,6 +214,14 @@ check_deep_directory_tree() {
     pages_in_use=${BASH_REMATCH[1]}
     expect_serial 'baremetal> '
     console_check 'echo Saved > /disk/root.txt' 'Disk file saved\.'
+    console_check "cd /disk/$mkdir_parent" "cd /disk/$mkdir_parent"
+    console_check 'mkdir LAST//' 'Directory created\.'
+    console_check 'cd LAST/' 'cd LAST/'
+    console_check 'mkdir CHILD' 'Path is too long or has too many components\.'
+    printf 'ls\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+    [[ $transcript != *'CHILD/'* ]]
+    console_check 'cd /' 'cd /'
     console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
     console_check 'mem' "4 KiB pages: [0-9]+ managed, $pages_in_use used,"
     console_check 'umount /disk' 'FAT32 unmounted\.'
@@ -304,7 +312,7 @@ make_overlapping_gpt() {
 
 run_directory_fixtures() {
     local image="$files/directory-growth.raw" cut_image="$files/growth-cut.raw"
-    local entry copy offset depth deep_path= guest_deep_path=
+    local entry copy offset depth deep_path= guest_deep_path= mkdir_parent=
     local cluster=2 free_clusters=0 stale_sector
     local directories=()
     cp --sparse=always "$files/disk.raw" "$image"
@@ -323,6 +331,7 @@ run_directory_fixtures() {
     done
     stale_sector=$((data_offset / 512 + cluster - 3))
     printf '%0512d' 0 | dd of="$image" bs=512 seek="$stale_sector" conv=notrunc status=none
+    run_mkdir_fixtures "$image"
     cp --sparse=always "$image" "$cut_image"
     run_guest 'FAT32 grows a full subdirectory' 1 64M check_directory_growth \
         -machine pc -kernel "$kernel" -drive "file=$image,format=raw,if=ide,index=0"
@@ -353,6 +362,8 @@ run_directory_fixtures() {
         directories+=("::${deep_path%/}")
         if (( depth == 16 )); then
             guest_deep_path=${deep_path%/}
+        elif (( depth == 30 )); then
+            mkdir_parent=${deep_path%/}
         fi
     done
     mmd -i "$image@@1048576" "${directories[@]}"
@@ -481,4 +492,79 @@ run_vfs_fixtures() {
         -machine pc -kernel "$build_dir/fat32-fault.elf" -drive "file=$files/mount-fault.raw,format=raw,if=ide,index=0"
     mtype -i "$files/mount-fault.raw@@1048576" ::HOST.TXT | cmp - <(printf 'Remounted\n')
     mtype -i "$files/mount-fault.raw@@68157440" ::FAULT.TXT | cmp - <(printf 'OK\n')
+}
+
+check_mkdir() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'mkdir /disk/abcdefgh.xyz/' 'Directory created\.'
+    console_check 'ls /disk' 'ABCDEFGH\.XYZ/'
+    console_check 'cd /disk/subdir' 'cd /disk/subdir'
+    console_check 'mkdir mixed~1///' 'Directory created\.'
+    console_check 'echo Persisted > mixed~1/file.txt' 'Disk file saved\.'
+    console_check 'disk check /disk' 'Orphaned FAT32 clusters: 0'
+    console_check 'reboot' 'Rebooting'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'cat /disk/subdir/MIXED~1/FILE.TXT' $'\r?\nPersisted\r?\n'
+}
+
+check_refused_mkdir() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'mkdir /disk/subdir/Mixed~1' 'already exists\.'
+    console_check 'mkdir /disk/LONGFI~1.TXT' 'already exists\.'
+    console_check 'mkdir /disk/abcdefgh.xyz' 'already exists\.'
+    local name
+    for name in abcdefghi a.abcd a. a..b 'a b' 'a+b' 'a,b' 'a;b' 'a=b' 'a[b' 'a]b'; do
+        console_check "mkdir /disk/$name" 'short FAT name'
+    done
+    console_check 'mkdir /disk/missing/child' 'directory not found\.'
+    console_check 'mkdir /ram/child' 'requires a writable FAT32 mount'
+}
+
+check_mkdir_cut() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    printf 'mkdir /disk/subdir/child\r' >&"$serial_write"
+    expect_serial "Test: $cut_phase FAT32 flush complete\."
+}
+
+check_mkdir_repair() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'cd /disk/subdir/child' 'directory not found\.'
+    console_check 'cat /disk/subdir/F13.TXT' 'Peer seeded'
+    console_check 'disk check /disk' "Orphaned FAT32 clusters: $orphans"
+    console_check 'disk repair /disk' "Reclaimed FAT32 clusters: $orphans"
+    console_check 'mkdir /disk/subdir/child' 'Directory created\.'
+    console_check 'disk check /disk' 'Orphaned FAT32 clusters: 0'
+}
+
+run_mkdir_fixtures() {
+    local full_nested=$1 image="$files/mkdir.raw" cut="$files/mkdir-cut.raw"
+    local entry phase cut_phase orphans fixture first_byte
+    cp --sparse=always "$full_nested" "$image"
+    # Fill every remaining slot in the one-sector root directory.
+    for ((entry = 0; entry < 16; entry++)); do
+        first_byte=$(od -An -tu1 -j "$((root_offset + 32 * entry))" -N 1 "$image")
+        if (( first_byte == 0 )); then
+            mcopy -i "$image@@1048576" "$files/empty.txt" "::FILL$entry.TXT"
+        fi
+    done
+    run_guest 'FAT32 mkdir grows full root and nested directories' 1 64M check_mkdir \
+        -machine pc -kernel "$kernel" -drive "file=$image,format=raw,if=ide"
+    mtype -i "$image@@1048576" '::SUBDIR/MIXED~1/FILE.TXT' | cmp - <(printf 'Persisted\n')
+    check_image_unchanged 'FAT32 mkdir refuses invalid and duplicate names' "$image" check_refused_mkdir
+    for phase in unlinked linked; do
+        cp --sparse=always "$full_nested" "$cut"
+        fixture="$build_dir/fat32-interrupt.elf" cut_phase=second orphans=2
+        if [[ $phase == linked ]]; then
+            fixture="$build_dir/fat32-mkdir-linked.elf" cut_phase=third orphans=1
+        fi
+        QEMU_TEST_POWER_CUT=1 run_guest "FAT32 mkdir interruption ($phase extension)" 1 64M check_mkdir_cut \
+            -machine pc -kernel "$fixture" -drive "file=$cut,format=raw,if=ide"
+        run_guest "FAT32 mkdir recovery ($phase extension)" 1 64M check_mkdir_repair \
+            -machine pc -kernel "$kernel" -drive "file=$cut,format=raw,if=ide"
+        mtype -i "$cut@@1048576" ::SUBDIR/F13.TXT | cmp - "$files/peer.txt"
+    done
 }

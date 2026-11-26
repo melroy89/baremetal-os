@@ -6,7 +6,7 @@ source tests/qemu_serial.sh
 
 check_benchmark() {
     expect_serial 'baremetal> '
-    printf 'mount -t ext2 disk0p1 /ext\r' >&"$serial_write"
+    printf 'mount -t ext2 -o ro disk0p1 /ext\r' >&"$serial_write"
     expect_serial 'Ext2 mounted read-only\.'
     expect_serial 'baremetal> '
     printf 'crc32range 0 16777216 /ext/Bench\r' >&"$serial_write"

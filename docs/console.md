@@ -31,7 +31,7 @@ For more info read: [IDE storage and file commands](storage.md).
 
 ## Ethernet
 
-DHCP starts automatically when the e1000 driver initializes. Use `net info` to check the address and `ping HOST` to check connectivity. Use `net static` for manual addressing or `net off` for raw Ethernet.
+DHCP starts automatically when virtio-net or e1000 initializes. Use `net info` to check the address and `ping HOST` to check connectivity. Use `net static` for manual addressing or `net off` for raw Ethernet.
 
 For more info read: [IPv4 setup and Ethernet commands](networking.md).
 
@@ -49,6 +49,7 @@ The console starts at `/`. Use `ls` there to see mounted volumes, or `cd /ram` t
 | `echo [TEXT] > PATH`            | Write text and a newline to a file.                         |
 | `cp SOURCE DEST`                | Copy a file between or within mounted volumes.              |
 | `touch PATH`                    | Create an empty file. Existing files stay unchanged.        |
+| `mkdir PATH`                    | Create one directory on a writable FAT32 volume.            |
 | `rm PATH`                       | Remove a writable file.                                     |
 | `crc32 FILE`                    | Checksum a file in `/ram` from anywhere.                    |
 | `crc32range OFFSET LENGTH PATH` | Checksum up to 64 MiB of a file using decimal byte offsets. |

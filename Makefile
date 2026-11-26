@@ -5,10 +5,11 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o vfs.o)
+OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o vfs.o virtio_net.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
-FAT_FIXTURES := $(addprefix $(BUILD)/fat32-,interrupt.elf fault.elf overlap.elf)
+FAT_FIXTURES := $(addprefix $(BUILD)/fat32-,interrupt.elf mkdir-linked.elf fault.elf overlap.elf)
+EXT2_FAULTS := $(addprefix $(BUILD)/ext2-fixture-,ALLOC.elf PUBLISH.elf FINAL.elf BEFORE.elf AFTER.elf)
 RAM     ?= 64M
 SMP     ?= 1
 INITRAMFS ?=
@@ -28,6 +29,7 @@ $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 
 $(BUILD)/kernel.o: $(BUILD)/build_id.inc
 $(BUILD)/ip.o: src/udp.inc src/dhcp.inc src/dns.inc
+$(BUILD)/ext2.o: src/ext2_verify.inc src/ext2_write.inc
 $(BUILD)/fat32.o: src/fat32_check.inc src/fat32_copy.inc
 $(BUILD)/vfs.o: src/vfs_copy.inc src/vfs_read.inc
 $(BUILD)/ext2.o $(BUILD)/fat32.o $(BUILD)/vfs.o: src/volume.inc
@@ -87,6 +89,9 @@ $(BUILD)/fat32-%.o: tests/fat32_%.asm | $(BUILD)
 	$(NASM) -f elf64 $< -o $@
 
 $(BUILD)/fat32-interrupt.elf64: FAT_WRAPPERS := --wrap=block_flush
+$(BUILD)/fat32-mkdir-linked.elf64: FAT_WRAPPERS := --wrap=block_flush
+$(BUILD)/fat32-mkdir-linked.o: tests/fat32_interrupt.asm | $(BUILD)
+	$(NASM) -f elf64 -DCUT_FLUSH=3 $< -o $@
 $(BUILD)/fat32-fault.elf64: FAT_WRAPPERS := --wrap=block_write --wrap=block_flush
 $(BUILD)/fat32-overlap.elf64: FAT_WRAPPERS := --wrap=gpt_partition
 
@@ -106,10 +111,11 @@ test-ata test-gpt: test-%: $(KERNEL)
 test-fat32: $(KERNEL) $(FAT_FIXTURES)
 	bash tests/storage_boot.sh "$(BUILD)" fat32
 
-test-ext2: $(KERNEL)
+test-ext2: $(KERNEL) $(EXT2_FAULTS)
 	bash tests/ext2_boot.sh "$(BUILD)"
+	bash tests/ext2_write.sh "$(BUILD)"
 
-test-network: $(KERNEL) $(BUILD)/network-fixture.elf $(BUILD)/dns-fault.elf
+test-network: $(KERNEL) $(BUILD)/network-fixture.elf $(BUILD)/dns-fault.elf $(BUILD)/virtio-queue.elf $(BUILD)/virtio-retry.elf
 	bash tests/network_boot.sh "$(BUILD)"
 
 os-run: $(KERNEL)
@@ -138,6 +144,15 @@ $(BUILD)/network-fixture.elf64: $(filter-out $(BUILD)/ip.o,$(OBJECTS)) $(BUILD)/
 	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack --wrap=page_alloc $(filter %.o,$^) -o $@
 
 $(BUILD)/network-fixture.elf: $(BUILD)/network-fixture.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
+
+$(BUILD)/virtio-dma-fault.o: tests/net_dma_fault.asm | $(BUILD)
+	$(NASM) -f elf64 -DTEST_VIRTIO_DMA $< -o $@
+
+$(BUILD)/virtio-retry.elf64: $(OBJECTS) $(BUILD)/virtio-dma-fault.o src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack --wrap=page_alloc --wrap=pci_config_read32 $(filter %.o,$^) -o $@
+
+$(BUILD)/virtio-retry.elf: $(BUILD)/virtio-retry.elf64
 	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
 
 $(BUILD)/ip-dns-fault.o: src/ip.asm src/udp.inc src/dhcp.inc src/dns.inc | $(BUILD)
@@ -171,3 +186,34 @@ $(BUILD)/ext2-bench-%.elf: $(BUILD)/ext2-bench-%.elf64
 .PHONY: test-network-tap
 test-network-tap: $(KERNEL)
 	unshare --user --map-root-user --net bash tests/network_tap.sh "$(BUILD)"
+
+
+$(BUILD)/ext2-fixture-BEFORE.o: EXT2_FLAGS := -DCUT=2
+$(BUILD)/ext2-fixture-AFTER.o: EXT2_FLAGS := -DCUT=3
+
+$(BUILD)/ext2-fixture-%.o: tests/ext2_fault.asm | $(BUILD)
+	$(NASM) -f elf64 -D$* $(EXT2_FLAGS) $< -o $@
+
+$(BUILD)/ext2-fixture-%.elf64: $(BUILD)/ext2-fixture-%.o $(OBJECTS) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		--wrap=block_write --wrap=block_flush $(filter %.o,$^) -o $@
+
+$(BUILD)/ext2-fixture-%.elf: $(BUILD)/ext2-fixture-%.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
+
+.PHONY: bench-network
+bench-network: $(KERNEL)
+	unshare --user --map-root-user --net bash tests/network_bench.sh "$(BUILD)"
+
+$(BUILD)/virtio-net-test.o: src/virtio_net.asm src/os_constants.inc | $(BUILD)
+	$(NASM) -f elf64 -Isrc/ -DTEST_VIRTIO_TX $< -o $@
+
+$(BUILD)/virtio-queue.o: tests/virtio_queue.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/virtio-queue.elf64: $(filter-out $(BUILD)/virtio_net.o,$(OBJECTS)) $(BUILD)/virtio-net-test.o $(BUILD)/virtio-queue.o src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		--wrap=console_readline $(filter %.o,$^) -o $@
+
+$(BUILD)/virtio-queue.elf: $(BUILD)/virtio-queue.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@

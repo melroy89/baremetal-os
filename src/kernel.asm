@@ -37,9 +37,10 @@ extern command_lspci
 extern command_disk
 extern command_net, command_ping
 extern dhcp_start
+extern vfs_shutdown, net_shutdown
 extern ramfs_mount
 extern command_ls, command_cat, command_rm, command_cd, command_pwd
-extern command_touch, command_cp
+extern command_touch, command_cp, command_mkdir
 extern command_mount, command_umount
 extern command_echo
 
@@ -94,7 +95,10 @@ kernel_main:
     cmp     rax, LINE_TOO_LONG
     je      .too_long
     test    rax, rax
-    js      command_halt
+    jns     .line_ready
+    call    command_halt
+    jmp     .prompt
+.line_ready:
     jz      .prompt
 
     ; Trim padding and accept a leading slash for existing console shortcuts.
@@ -247,8 +251,12 @@ command_version:
 
 command_reboot:
     sub     rsp, 8
+    call    vfs_shutdown
+    test    rax, rax
+    jnz     power_error
     lea     rdi, [rel reboot_text]
     call    console_write_cstr
+    call    net_shutdown
     call    qemu_reboot
     lea     rdi, [rel reboot_failed]
     add     rsp, 8
@@ -302,10 +310,19 @@ command_uptime:
     jmp     console_write_cstr
 
 command_halt:
-    and     rsp, -16
+    sub     rsp, 8
+    call    vfs_shutdown
+    test    rax, rax
+    jnz     power_error
     lea     rdi, [rel poweroff_text]
     call    console_write_cstr
+    call    net_shutdown
     jmp     qemu_shutdown
+
+power_error:
+    mov     rdi, rax
+    add     rsp, 8
+    jmp     console_write_cstr
 
 section .rodata
 welcome:           db "Bare Metal OS | x86-64", 10, "Type help for commands.", 10, 0
@@ -335,7 +352,7 @@ help_text:
     help_row "ls [PATH]", "List a directory or show mounts at /"
     help_row "cd PATH", "Change the current directory"
     help_row "pwd", "Print the current directory"
-    help_row "mount",    "List volumes or mount FAT32 or read-only ext2"
+    help_row "mount",    "List volumes or mount FAT32 or ext2"
     help_row "umount",   "Unmount the volume at /NAME"
     help_row "cat PATH", "Print a file"
     help_row "crc32 FILE", "Show a RAM file's CRC-32 checksum"
@@ -343,6 +360,7 @@ help_text:
     help_row "echo",     "Print text or write it to a file with >"
     help_row "cp SRC DST", "Copy a file"
     help_row "touch PATH", "Create an empty file if it does not exist"
+    help_row "mkdir PATH", "Create a FAT32 directory"
     help_row "rm PATH",  "Remove a writable file"
     help_row "uptime",   "Show time since boot"
     help_row "log",      "Show boot milestones"
@@ -393,6 +411,7 @@ echo_name:         db "echo", 0
 rm_name:           db "rm", 0
 cp_name:           db "cp", 0
 touch_name:        db "touch", 0
+mkdir_name:        db "mkdir", 0
 uptime_name:       db "uptime", 0
 log_name:          db "log", 0
 version_name:      db "version", 0
@@ -425,6 +444,7 @@ commands:
     dq echo_name, command_echo, 1
     dq cp_name, command_cp, 1
     dq touch_name, command_touch, 1
+    dq mkdir_name, command_mkdir, 1
     dq rm_name, command_rm, 1
     dq uptime_name, command_uptime, 0
     dq log_name, command_log, 0

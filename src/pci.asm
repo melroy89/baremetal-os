@@ -24,6 +24,7 @@ global command_lspci
 global pci_walk
 global pci_config_read32
 global pci_config_write16
+global pci_config_write32
 
 command_lspci:
     push    0                          ; Listed device flag
@@ -185,6 +186,25 @@ pci_config_read32:
     mov     dx, PCI_CONFIG_ADDRESS
     out     dx, eax
     mov     eax, ecx
+    ret
+
+; edi = packed BDF, esi = aligned offset, edx = value.
+pci_config_write32:
+    mov     r8d, edx
+    mov     dx, PCI_CONFIG_ADDRESS
+    in      eax, dx
+    mov     r9d, eax
+    mov     eax, edi
+    shl     eax, 8
+    or      eax, esi
+    or      eax, PCI_CONFIG_ENABLE
+    out     dx, eax
+    mov     dx, PCI_CONFIG_DATA
+    mov     eax, r8d
+    out     dx, eax
+    mov     dx, PCI_CONFIG_ADDRESS
+    mov     eax, r9d
+    out     dx, eax
     ret
 
 ; edi = packed BDF, esi = word offset, edx = value.
