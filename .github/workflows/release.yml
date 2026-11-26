@@ -1,0 +1,51 @@
+name: Release assets
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install build and test tools
+        run: |
+          sudo apt-get -o Acquire::Languages=none update
+          sudo apt-get install -y --no-install-recommends \
+            nasm grub-common grub-pc-bin grub-efi-amd64-bin \
+            mtools xorriso qemu-system-x86 ovmf-generic
+
+      - name: Build and test the release
+        run: |
+          make -j"$(nproc)" os-check os-iso test-pages
+          bash tests/boot_smoke.sh
+
+      - name: Verify the version and generate checksums
+        working-directory: build
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! strings baremetal-os.elf | grep -Fx -- "Bare Metal OS ${RELEASE_TAG#v} (x86-64)" >/dev/null; then
+            printf 'Kernel version does not match the release tag %s\n' "$RELEASE_TAG" >&2
+            exit 1
+          fi
+          sha256sum baremetal-os.elf baremetal-os.iso > SHA256SUMS
+
+      - name: Attach assets to the release
+        working-directory: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh release upload --repo "$GITHUB_REPOSITORY" -- \
+            "$RELEASE_TAG" baremetal-os.elf baremetal-os.iso SHA256SUMS
