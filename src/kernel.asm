@@ -317,6 +317,7 @@ help_text:
     help_row "help",     "Show console commands"
     help_row "info",     "Show CPU and usable memory information"
     help_row "cpu",      "Show boot CPU capabilities and processors started"
+    help_row "cpu ping", "Check which secondary CPUs respond"
     help_row "mem",      "Show pages managed, used and free by the kernel"
     help_row "memmap",   "Show the Multiboot memory map"
     help_row "ls",       "List files in the RAM filesystem"
@@ -374,7 +375,7 @@ commands:
     ; Name, handler, accepts arguments
     dq help_name, command_help, 0
     dq info_name, command_info, 0
-    dq cpu_name, command_cpu, 0
+    dq cpu_name, command_cpu, 1
     dq mem_name, command_mem, 0
     dq memmap_name, command_memmap, 0
     dq ls_name, ramfs_ls, 0

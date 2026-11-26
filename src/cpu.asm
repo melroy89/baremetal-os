@@ -5,6 +5,8 @@ default rel
 extern console_write_cstr
 extern console_putc
 extern print_cpu_counts
+extern command_cpu_ping
+extern str_eq
 extern g_smp_online_cpus
 extern g_smp_total_cpus
 
@@ -12,6 +14,18 @@ section .text
 global command_cpu
 
 command_cpu:
+    cmp     byte [rdi], 0
+    je      .details
+    sub     rsp, 8
+    lea     rsi, [rel ping_name]
+    call    str_eq
+    add     rsp, 8
+    test    eax, eax
+    jnz     command_cpu_ping
+    lea     rdi, [rel cpu_usage]
+    jmp     console_write_cstr
+
+.details:
     push    rbx
     push    r12
     push    r13
@@ -123,6 +137,8 @@ command_cpu:
     ret
 
 section .rodata
+ping_name:         db "ping", 0
+cpu_usage:         db "Usage: cpu [ping]", 10, 0
 vendor_label:      db "CPU vendor: ", 0
 model_label:       db 10, "CPU model: ", 0
 model_unavailable: db 10, "CPU model: unavailable", 0

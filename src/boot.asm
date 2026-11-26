@@ -8,6 +8,8 @@ extern kernel_main
 extern console_putc
 extern console_write_cstr
 extern console_input_irq
+extern smp_ping_irq
+extern smp_ping_drain_irq
 extern write_hex64_raw
 
 global _start
@@ -159,7 +161,7 @@ long_mode_start:
     jmp     .halt_forever
 
 ; ----------------------------------------------------------------------------
-; CPU exceptions (0..31) and master PIC interrupts (32..39)
+; CPU exceptions, master PIC interrupts, and local APIC interrupts
 ; ----------------------------------------------------------------------------
 idt_setup_and_load:
     lea     rdi, [rel idt64]
@@ -169,6 +171,8 @@ idt_setup_and_load:
     cmp     ecx, IDT_ENTRIES
     jae     .load
     mov     rax, [rsi + rcx*8]          ; handler address
+    test    rax, rax
+    jz      .next                     ; Unused gates stay zero in BSS.
     mov     [rdi + 0], ax               ; offset 15..0
     mov     word [rdi + 2], 0x08        ; 64-bit code selector
     mov     byte [rdi + 4], 0           ; IST = 0
@@ -178,12 +182,17 @@ idt_setup_and_load:
     shr     rax, 16
     mov     [rdi + 8], eax              ; offset 63..32
     mov     dword [rdi + 12], 0         ; reserved
+.next:
     add     rdi, 16
     inc     ecx
     jmp     .fill
 .load:
     lidt    [rel idt64_ptr]
     ret
+
+; A spurious local APIC interrupt does not require an EOI.
+apic_spurious_irq:
+    iretq
 
 ; Common CPU exception reporter (prints vector + RIP + error code to COM1 & halts)
 isr_common:
@@ -292,6 +301,12 @@ isr_stub_table:
 %rep 8
     dq console_input_irq
 %endrep
+    times APIC_DRAIN_VECTOR - ($ - isr_stub_table) / 8 dq 0
+    dq smp_ping_drain_irq
+    times APIC_PING_VECTOR - ($ - isr_stub_table) / 8 dq 0
+    dq smp_ping_irq
+    times APIC_SPURIOUS_VECTOR - ($ - isr_stub_table) / 8 dq 0
+    dq apic_spurious_irq
 IDT_ENTRIES equ ($ - isr_stub_table) / 8
 
 msg_exc_hdr:    db 10, "[PANIC] CPU Exception vec=0x", 0

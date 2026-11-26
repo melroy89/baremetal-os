@@ -69,10 +69,18 @@
 ; --- Local APIC MMIO ---
 %define APIC_DEFAULT_BASE   0xFEE00000
 %define APIC_REG_ID         0x020
+%define APIC_REG_EOI        0x0B0
 %define APIC_REG_SVR        0x0F0
+%define APIC_REG_IRR_BASE   0x200
 %define APIC_REG_ESR        0x280
 %define APIC_REG_ICR_LO     0x300
 %define APIC_REG_ICR_HI     0x310
+%define APIC_ICR_BUSY       (1 << 12)
+%define APIC_IPI_NOT_SENT   1
+%define APIC_IPI_UNCERTAIN  2
+%define APIC_DRAIN_VECTOR   0x3F
+%define APIC_PING_VECTOR    0x40
+%define APIC_SPURIOUS_VECTOR 0xFF
 
 ; --- SMP AP Trampoline physical addresses (low memory < 1 MiB) ---
 %define TRAMP_BASE          0x00008000

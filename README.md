@@ -53,6 +53,7 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 | `help`     | List commands                                                    |
 | `info`     | Show CPUs started, secondary stack pages, and usable RAM         |
 | `cpu`      | Show the boot CPU vendor, model, and capabilities                |
+| `cpu ping` | Check which online secondary CPUs respond                        |
 | `mem`      | Show how many 4 KiB pages the kernel manages, uses, and has free |
 | `memmap`   | Show the memory ranges and types reported by Multiboot           |
 | `ls`       | List files in the RAM filesystem                                 |
@@ -65,6 +66,8 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 | `clear`    | Clear VGA and ANSI-compatible serial terminals                   |
 | `reboot`   | Restart the QEMU guest                                           |
 | `halt`     | Power off the machine                                            |
+
+`cpu ping` sends an interrupt to each online secondary CPU and reports its reply or timeout. Run it again to retry after a timeout. In a four-vCPU guest, expect three replies. A one-vCPU guest has no secondary CPUs to ping.
 
 ## Run with libvirt
 

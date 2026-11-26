@@ -6,8 +6,12 @@ default rel
 %ifdef TEST_delayed_ap
 extern __real_pit_delay_us
 extern __real_console_readline
+extern __real_smp_ping_irq
+extern __real_apic_send_ipi
 global __wrap_pit_delay_us
 global __wrap_console_readline
+global __wrap_smp_ping_irq
+global __wrap_apic_send_ipi
 
 section .text
 __wrap_pit_delay_us:
@@ -36,18 +40,105 @@ __wrap_console_readline:
     call    __real_console_readline
     pop     rdi
     cmp     rax, 2
-    jne     .done
+    jne     .check_ping_gate
     cmp     word [rdi], 'go'
     jne     .done
     mov     byte [rel ap_gate_open], 1
+    jmp     .consumed
+.check_ping_gate:
+    cmp     rax, 7
+    jne     .done
+    cmp     dword [rdi], 'ping'
+    jne     .done
+    cmp     dword [rdi + 4], '-go'
+    jne     .done
+    mov     byte [rel ping_release_requested], 1
+.consumed:
     xor     eax, eax                   ; Treat the test signal as an empty line.
 .done:
     ret
+
+__wrap_smp_ping_irq:
+    ; Hold APIC ID 1's first interrupt so it replies after the timeout.
+    push    rax
+    mov     eax, APIC_DEFAULT_BASE
+    cmp     dword [rax + APIC_REG_ID], 1 << 24
+    jne     .resume
+.wait:
+    cmp     byte [rel ping_gate_open], 0
+    jne     .resume
+    pause
+    jmp     .wait
+.resume:
+    pop     rax
+    jmp     __real_smp_ping_irq
+
+__wrap_apic_send_ipi:
+    cmp     edi, 1
+    jne     .send
+    cmp     byte [rel ping_release_requested], 0
+    je      .send
+    cmp     esi, APIC_DRAIN_VECTOR
+    jne     .check_ping
+    ; Release the old reply only once the BSP is trying to drain it.
+    mov     byte [rel ping_gate_open], 1
+    jmp     .send
+.check_ping:
+    cmp     esi, APIC_PING_VECTOR
+    jne     .send
+    cmp     byte [rel dropped_fresh_ping], 0
+    jne     .send
+    ; The old reply must not make this unsent fresh request succeed.
+    mov     byte [rel dropped_fresh_ping], 1
+    xor     eax, eax
+    ret
+.send:
+    jmp     __real_apic_send_ipi
 
 section .bss
 alignb 8
 ap_resume:    resq 1
 ap_gate_open: resb 1
+ping_gate_open: resb 1
+ping_release_requested: resb 1
+dropped_fresh_ping: resb 1
+
+%elifdef TEST_lost_ping
+extern __real_apic_send_ipi
+global __wrap_apic_send_ipi
+
+section .text
+__wrap_apic_send_ipi:
+    cmp     edi, 1
+    jne     .send
+    cmp     esi, APIC_PING_VECTOR
+    jne     .check_drain
+    cmp     byte [rel ping_attempts], 0
+    jne     .check_loss
+    inc     byte [rel ping_attempts]
+    ; Report a confirmed failure at the APIC driver's return boundary.
+    mov     eax, APIC_IPI_NOT_SENT
+    ret
+.check_loss:
+    cmp     byte [rel ping_attempts], 1
+    jne     .send
+    inc     byte [rel ping_attempts]
+    jmp     .drop
+.check_drain:
+    cmp     esi, APIC_DRAIN_VECTOR
+    jne     .send
+    cmp     byte [rel dropped_drain], 0
+    jne     .send
+    mov     byte [rel dropped_drain], 1
+.drop:
+    xor     eax, eax
+    ret
+.send:
+    jmp     __real_apic_send_ipi
+
+section .bss
+ping_attempts: resb 1
+dropped_drain: resb 1
 
 %else
 extern __real_smp_init

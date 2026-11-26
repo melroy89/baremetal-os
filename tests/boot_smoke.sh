@@ -34,11 +34,28 @@ check_console() {
 
 check_smoke() {
     check_console
+    check_cpu_ping
     if [[ $1 == -kernel ]]; then
         printf 'reboot\r' >&"$serial_write"
         expect_serial 'Rebooting\.\.\.'
         check_console
     fi
+}
+
+check_cpu_ping() {
+    local attempt ap
+    for attempt in 1 2; do
+        printf 'cpu ping\r' >&"$serial_write"
+        if (( cpus == 1 )); then
+            expect_serial 'No online secondary CPUs\.'
+        else
+            for ((ap = 1; ap < cpus; ap++)); do
+                expect_serial "APIC ID $ap: replied"$'\r?\n'
+            done
+            expect_serial "Secondary CPUs replied: $((cpus - 1))/$((cpus - 1))"$'\r?\n'
+        fi
+        expect_serial 'baremetal> '
+    done
 }
 
 build_id_pattern='^%define BUILD_ID "([0-9a-f]{12})"$'

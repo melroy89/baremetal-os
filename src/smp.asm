@@ -5,6 +5,14 @@ default rel
 
 %include "os_constants.inc"
 
+%define APIC_ID_COUNT 256
+%define APIC_SVR_ENABLE (1 << 8)
+%define PING_TIMEOUT_NS 100000000
+%define PING_WAITING 1
+%define PING_DRAINING 2
+%define PING_IRR_REG (APIC_REG_IRR_BASE + (APIC_PING_VECTOR / 32) * 16)
+%define PING_IRR_BIT (1 << (APIC_PING_VECTOR % 32))
+
 extern pml4_table
 extern gdt64_ptr
 extern idt64_ptr
@@ -14,6 +22,11 @@ extern _kernel_end
 extern page_init
 extern page_alloc
 extern pages_free
+extern console_putc
+extern console_write_cstr
+extern write_u64
+extern apic_wait_icr
+extern apic_send_ipi
 
 section .text
 
@@ -21,6 +34,9 @@ global smp_init
 global g_smp_total_cpus
 global g_smp_online_cpus
 global smp_stack_pages
+global command_cpu_ping
+global smp_ping_irq
+global smp_ping_drain_irq
 
 ; rdi = Multiboot info.
 smp_init:
@@ -49,7 +65,7 @@ smp_init:
 
     ; Software-enable Local APIC (SVR bit 8 = 0x100, spurious vector 0xFF)
     mov     eax, [r13 + APIC_REG_SVR]
-    or      eax, 0x1FF
+    or      eax, APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR
     mov     [r13 + APIC_REG_SVR], eax
 
     ; Read BSP Local APIC ID
@@ -100,6 +116,7 @@ smp_init:
     lea     rax, [rel ap_apic_ids]
     movzx   edi, byte [rax + rbx]
     mov     esi, 0x00004500             ; INIT, Level=Assert, Edge
+    mov     rdx, r13
     call    apic_send_ipi
     inc     rbx
     jmp     .init_lp
@@ -117,6 +134,7 @@ smp_init:
     lea     rax, [rel ap_apic_ids]
     movzx   edi, byte [rax + rbx]
     mov     esi, 0x00004600 | TRAMP_VECTOR
+    mov     rdx, r13
     call    apic_send_ipi
     inc     rbx
     jmp     .sipi1_lp
@@ -137,6 +155,7 @@ smp_init:
     cmp     byte [rcx + rdi], 0
     jne     .sipi2_next
     mov     esi, 0x00004600 | TRAMP_VECTOR
+    mov     rdx, r13
     call    apic_send_ipi
 .sipi2_next:
     inc     rbx
@@ -173,6 +192,7 @@ smp_init:
     mov     dword [r13 + APIC_REG_ESR], 0
     mov     dword [r13 + APIC_REG_ICR_HI], 0
     mov     dword [r13 + APIC_REG_ICR_LO], 0x000C4500 ; All Excl Self, INIT Assert
+    mov     rdx, r13
     call    apic_wait_icr
 
     mov     rdi, 10000
@@ -181,6 +201,7 @@ smp_init:
     mov     dword [r13 + APIC_REG_ESR], 0
     mov     dword [r13 + APIC_REG_ICR_HI], 0
     mov     dword [r13 + APIC_REG_ICR_LO], 0x000C4600 | TRAMP_VECTOR
+    mov     rdx, r13
     call    apic_wait_icr
 
     ; Wait 25 ms for APs to boot and check in
@@ -238,33 +259,182 @@ smp_stack_pages:
 .done:
     ret
 
-; ----------------------------------------------------------------------------
-; Internal: wait for APIC ICR Delivery Status bit (bit 12) to clear
-; Assumes r13 = apic_base.
-; ----------------------------------------------------------------------------
-apic_wait_icr:
-    mov     ecx, 1000000
-.lp:
-    mov     eax, [r13 + APIC_REG_ICR_LO]
-    test    eax, (1 << 12)
-    jz      .ok
-    pause
-    dec     ecx
-    jnz     .lp
-.ok:
+command_cpu_ping:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r13, [rel g_smp_apic_base]
+    xor     ebx, ebx                   ; Local APIC ID
+    xor     r12d, r12d                 ; Secondary CPUs tested
+    xor     r14d, r14d                 ; Replies
+.next:
+    cmp     bl, [rel bsp_apic_id]
+    je      .advance
+    lea     rax, [rel ap_started]
+    cmp     byte [rax + rbx], 0
+    je      .advance
+    inc     r12d
+    mov     edi, ebx
+    call    ping_ap
+    mov     r15, rax
+    test    r15, r15
+    jnz     .report
+    inc     r14d
+    lea     r15, [rel ping_reply]
+.report:
+    lea     rdi, [rel ping_apic_label]
+    call    console_write_cstr
+    mov     edi, ebx
+    call    write_u64
+    mov     rdi, r15
+    call    console_write_cstr
+.advance:
+    inc     ebx
+    cmp     ebx, APIC_ID_COUNT
+    jb      .next
+
+    test    r12d, r12d
+    jz      .no_targets
+    lea     rdi, [rel ping_summary]
+    call    console_write_cstr
+    mov     edi, r14d
+    call    write_u64
+    mov     edi, '/'
+    call    console_putc
+    mov     edi, r12d
+    call    write_u64
+    mov     edi, 10
+    call    console_putc
+    jmp     .done
+.no_targets:
+    lea     rdi, [rel ping_no_targets]
+    call    console_write_cstr
+.done:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
     ret
 
-; ----------------------------------------------------------------------------
-; Internal: apic_send_ipi(uint8 dest_apic_id in dil, uint32 icr_lo in esi)
-; Assumes r13 = apic_base.
-; ----------------------------------------------------------------------------
-apic_send_ipi:
-    mov     dword [r13 + APIC_REG_ESR], 0
-    movzx   eax, dil
-    shl     eax, 24
-    mov     [r13 + APIC_REG_ICR_HI], eax
-    mov     [r13 + APIC_REG_ICR_LO], esi
-    jmp     apic_wait_icr
+; rdi = target APIC ID, r13 = BSP APIC base. Return zero for a reply
+; or a status suffix for an unsuccessful request.
+ping_ap:
+    push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     r12d, edi
+    lea     rbx, [rel ap_ping_pending]
+    add     rbx, rdi
+
+    ; Before retiring any previous ping, ensure its IPI is no longer in
+    ; transit from this APIC.
+    mov     rdx, r13
+    call    apic_wait_icr
+    test    eax, APIC_ICR_BUSY
+    jnz     .busy
+    cmp     byte [rbx], 0
+    je      .send_ping
+
+    ; The lower-priority interrupt runs after any queued ping. Either
+    ; handler can retire the old request, but only a fresh ping can reply.
+    mov     byte [rbx], PING_DRAINING
+    mov     esi, APIC_DRAIN_VECTOR
+    mov     rdx, r13
+    call    apic_send_ipi
+    cmp     eax, APIC_IPI_NOT_SENT
+    je      .send_failed
+    call    wait_ping_slot
+    test    eax, eax
+    jnz     .drain_timeout
+
+.send_ping:
+    mov     byte [rbx], PING_WAITING
+    mov     edi, r12d
+    mov     esi, APIC_PING_VECTOR
+    mov     rdx, r13
+    call    apic_send_ipi
+    cmp     eax, APIC_IPI_NOT_SENT
+    je      .reset
+    call    wait_ping_slot
+    test    eax, eax
+    jz      .done
+    lea     rax, [rel ping_timeout]
+    jmp     .done
+.reset:
+    mov     byte [rbx], 0
+.send_failed:
+    lea     rax, [rel ping_send_failed]
+    jmp     .done
+.drain_timeout:
+    lea     rax, [rel ping_drain_timeout]
+    jmp     .done
+.busy:
+    lea     rax, [rel ping_busy]
+.done:
+    add     rsp, 8
+    pop     r12
+    pop     rbx
+    ret
+
+; rbx = per-CPU slot. Return zero when it is cleared or one on timeout.
+wait_ping_slot:
+    push    r12
+    call    timer_ns
+    lea     r12, [rax + PING_TIMEOUT_NS]
+.wait:
+    cmp     byte [rbx], 0
+    je      .idle
+    call    timer_ns
+    cmp     rax, r12
+    jae     .timeout
+    pause
+    jmp     .wait
+.idle:
+    xor     eax, eax
+    pop     r12
+    ret
+.timeout:
+    mov     eax, 1
+    pop     r12
+    ret
+
+smp_ping_irq:
+    push    rax
+    push    rcx
+    mov     rcx, [rel g_smp_apic_base]
+    mov     dword [rcx + APIC_REG_EOI], 0
+    mov     eax, [rcx + APIC_REG_ID]
+    shr     eax, 24
+    lea     rcx, [rel ap_ping_pending]
+    mov     byte [rcx + rax], 0
+    pop     rcx
+    pop     rax
+    iretq
+
+smp_ping_drain_irq:
+    push    rax
+    push    rcx
+    push    rdx
+    mov     rdx, [rel g_smp_apic_base]
+    mov     dword [rdx + APIC_REG_EOI], 0
+    mov     eax, [rdx + APIC_REG_ID]
+    shr     eax, 24
+    lea     rcx, [rel ap_ping_pending]
+    cmp     byte [rcx + rax], PING_DRAINING
+    jne     .done
+    ; A drain from a previous attempt could already be running when a new
+    ; recovery begins. Leave retirement to the ping if it is still queued.
+    test    dword [rdx + PING_IRR_REG], PING_IRR_BIT
+    jnz     .done
+    mov     byte [rcx + rax], 0
+.done:
+    pop     rdx
+    pop     rcx
+    pop     rax
+    iretq
 
 ; ----------------------------------------------------------------------------
 ; Internal: Copy 16->32->64 trampoline to 0x8000 and populate mailbox fields
@@ -517,8 +687,10 @@ ap_entry64:
     push    0
     popfq
 
-    ; Record own APIC ID in ap_started[] and announce online
+    ; INIT reset leaves local sources masked. Enable the APIC for IPIs
+    ; before announcing that this CPU can receive them.
     mov     rax, [rel g_smp_apic_base]
+    mov     dword [rax + APIC_REG_SVR], APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR
     mov     eax, [rax + APIC_REG_ID]
     shr     eax, 24
     lea     rcx, [rel ap_started]
@@ -528,6 +700,11 @@ ap_entry64:
     lock inc dword [rel g_smp_total_cpus]
 .online:
     lock inc dword [rel g_smp_online_cpus]
+
+.ap_idle:
+    sti
+    hlt
+    jmp     .ap_idle
 
 .ap_halt:
     cli
@@ -539,6 +716,15 @@ ap_entry64:
 ; ZERO relocations inside this block — all offsets evaluated at assembly time!
 ; ============================================================================
 section .rodata
+ping_apic_label:    db "APIC ID ", 0
+ping_reply:         db ": replied", 10, 0
+ping_timeout:       db ": timed out", 10, 0
+ping_drain_timeout: db ": timed out waiting to retry", 10, 0
+ping_send_failed:   db ": IPI send failed", 10, 0
+ping_busy:          db ": IPI controller busy", 10, 0
+ping_summary:       db "Secondary CPUs replied: ", 0
+ping_no_targets:    db "No online secondary CPUs.", 10, 0
+
 align 16
 ap_trampoline_start:
 bits 16
@@ -637,9 +823,10 @@ ap_stack_count:   resd 1
 n_ap_ids:          resd 1
 bsp_apic_id:       resb 1
 ap_apic_ids:       resb OS_MAX_CPUS
-ap_started:        resb 256
+ap_started:        resb APIC_ID_COUNT
 ap_fallback_mode:  resb 1
 ap_broadcast:      resb 1
+ap_ping_pending:  resb APIC_ID_COUNT
 
 alignb 8
 ap_stack_tops:     resq OS_MAX_CPUS - 1

@@ -37,8 +37,57 @@ global timer_init
 global timer_ns
 global qemu_shutdown
 global qemu_reboot
+global apic_wait_icr
+global apic_send_ipi
 
 extern g_boot_tsc
+
+; rdx = xAPIC base. Return the last ICR low value in eax.
+apic_wait_icr:
+    mov     ecx, 1000000
+.poll:
+    mov     eax, [rdx + APIC_REG_ICR_LO]
+    test    eax, APIC_ICR_BUSY
+    jz      .done
+    pause
+    dec     ecx
+    jnz     .poll
+.done:
+    ret
+
+; edi = destination ID, esi = ICR low, rdx = xAPIC base. Return zero for
+; completed transport, APIC_IPI_NOT_SENT for confirmed failure, or
+; APIC_IPI_UNCERTAIN when transport may still complete.
+apic_send_ipi:
+    sub     rsp, 8
+    call    apic_wait_icr
+    test    eax, APIC_ICR_BUSY
+    jnz     .not_sent
+    mov     dword [rdx + APIC_REG_ESR], 0
+    movzx   eax, dil
+    shl     eax, 24
+    mov     [rdx + APIC_REG_ICR_HI], eax
+    mov     [rdx + APIC_REG_ICR_LO], esi
+    call    apic_wait_icr
+    test    eax, APIC_ICR_BUSY
+    jnz     .uncertain
+    mov     dword [rdx + APIC_REG_ESR], 0
+    ; A rejected vector cannot be delivered. Legacy accept errors may retry.
+    mov     eax, [rdx + APIC_REG_ESR]
+    test    eax, 1 << 5
+    jnz     .not_sent
+    test    eax, 1 << 2
+    jnz     .uncertain
+    xor     eax, eax
+    jmp     .done
+.not_sent:
+    mov     eax, APIC_IPI_NOT_SENT
+    jmp     .done
+.uncertain:
+    mov     eax, APIC_IPI_UNCERTAIN
+.done:
+    add     rsp, 8
+    ret
 
 ; ============================================================================
 ; 1. COM1 Serial Driver (0x3F8, 115200 8N1)
