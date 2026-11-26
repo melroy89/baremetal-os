@@ -11,6 +11,7 @@ extern g_mb_magic
 extern g_mb_info
 extern g_smp_total_cpus
 extern g_smp_online_cpus
+extern smp_stack_pages
 extern serial_init
 extern vga_clear
 extern vga_set_color
@@ -24,7 +25,6 @@ extern timer_ns
 extern smp_init
 extern memory_usable_bytes
 extern memory_map_print
-extern page_init
 extern pages_managed
 extern pages_free
 extern str_eq
@@ -47,11 +47,10 @@ kernel_main:
     jne     .bad_boot
     lea     rdi, [rel event_multiboot]
     call    record_boot_event
-    mov     edi, [rel g_mb_info]
-    call    page_init
     call    timer_init
     lea     rdi, [rel event_timer]
     call    record_boot_event
+    mov     edi, [rel g_mb_info]
     call    smp_init
     mov     eax, [rel g_smp_online_cpus]
     mov     [rel boot_cpus_started], eax
@@ -138,6 +137,13 @@ command_info:
     mov     edi, [rel g_smp_online_cpus]
     mov     esi, [rel g_smp_total_cpus]
     call    print_cpu_counts
+    lea     rdi, [rel ap_stack_text]
+    call    console_write_cstr
+    call    smp_stack_pages
+    mov     edi, eax
+    call    write_u64
+    mov     edi, 10
+    call    console_putc
     lea     rdi, [rel memory_text]
     call    console_write_cstr
     mov     edi, [rel g_mb_info]
@@ -275,6 +281,7 @@ help_text:         db "help    Show console commands", 10
                    db "halt    Power off the machine", 10, 0
 info_text:         db "Architecture: x86-64", 10, 0
 cpu_count_text:    db "CPUs started: ", 0
+ap_stack_text:     db "Secondary CPU stack pages: ", 0
 memory_text:       db "Usable memory: ", 0
 mib_text:          db " MiB", 10, 0
 pages_text:        db "4 KiB pages: ", 0
@@ -286,7 +293,7 @@ milliseconds_text: db " ms", 10, 0
 poweroff_text:     db "Powering off...", 10, 0
 reboot_text:       db "Rebooting...", 10, 0
 reboot_failed:     db "Reboot failed.", 10, 0
-version_text:      db "Bare Metal OS 1.0.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
+version_text:      db "Bare Metal OS 1.1.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
 log_text:          db "Boot log", 10, 0
 event_multiboot:   db "Multiboot handoff accepted.", 10, 0
 event_timer:       db "Timer initialized.", 10, 0

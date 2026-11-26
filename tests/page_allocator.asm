@@ -4,6 +4,7 @@ default rel
 %include "os_constants.inc"
 
 extern page_init
+extern _kernel_end
 extern page_alloc
 extern page_free
 extern pages_managed
@@ -37,6 +38,7 @@ global console_putc
 section .text
 _start:
     lea     rdi, [rel mbi]
+    lea     rsi, [rel _kernel_end]
     call    page_init
     assert_eq qword [rel pages_managed], 5
     assert_eq qword [rel pages_free], 5
@@ -85,6 +87,7 @@ _start:
     ; Truncation during the first map pass cannot publish partial results.
     dec     dword [rel mbi + MBI_MMAP_LENGTH]
     lea     rdi, [rel mbi]
+    lea     rsi, [rel _kernel_end]
     call    page_init
     assert_eq qword [rel pages_managed], 0
     assert_eq qword [rel pages_free], 0
@@ -97,15 +100,18 @@ _start:
     inc     dword [rel mbi + MBI_MMAP_LENGTH]
     mov     qword [rel mmap + 12], -1
     lea     rdi, [rel mbi]
+    lea     rsi, [rel _kernel_end]
     call    page_init
     assert_eq qword [rel pages_managed], 0
     mov     qword [rel mmap + 12], 2
     mov     dword [rel mbi + MBI_MODS_ADDR], -1
     lea     rdi, [rel mbi]
+    lea     rsi, [rel _kernel_end]
     call    page_init
     assert_eq qword [rel pages_managed], 0
     mov     dword [rel mbi + MBI_FLAGS], 0
     lea     rdi, [rel mbi]
+    lea     rsi, [rel _kernel_end]
     call    page_init
     assert_eq qword [rel pages_managed], 0
     assert_eq qword [rel pages_free], 0

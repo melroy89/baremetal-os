@@ -20,10 +20,11 @@ expect_serial() {
 }
 
 check_memory() {
+    local stack_pages=$((cpus - 1))
     printf 'mem\r' >&"$serial_write"
-    expect_serial '4 KiB pages: ([1-9][0-9]*) managed, 0 used, ([1-9][0-9]*) free'$'\r?\n'
-    if [[ ${BASH_REMATCH[1]} != "${BASH_REMATCH[2]}" ]]; then
-        printf 'Expected all managed pages to be free after boot\n' >&2
+    expect_serial "4 KiB pages: ([1-9][0-9]*) managed, $stack_pages used, ([1-9][0-9]*) free"$'\r?\n'
+    if (( BASH_REMATCH[1] != BASH_REMATCH[2] + stack_pages )); then
+        printf 'Managed page count does not match free pages plus stack pages\n' >&2
         return 1
     fi
     expect_serial 'baremetal> '
@@ -40,6 +41,7 @@ check_console() {
 
     printf 'info\r' >&"$serial_write"
     expect_serial "CPUs started: $cpus/$cpus"$'\r?\n'
+    expect_serial "Secondary CPU stack pages: $((cpus - 1))"$'\r?\n'
     expect_serial 'baremetal> '
 
     check_memory
@@ -103,7 +105,8 @@ if ! IFS= read -r build_id_line < build/build_id.inc || [[ ! $build_id_line =~ $
 fi
 build_id=${BASH_REMATCH[1]}
 
-check_boot 'Direct kernel' 4 64M -kernel build/baremetal-os.elf
+check_boot 'Direct kernel' 1 64M -kernel build/baremetal-os.elf
+check_boot 'Direct kernel SMP' 4 64M -kernel build/baremetal-os.elf
 iso=(-cdrom build/baremetal-os.iso -boot d)
 check_boot 'SeaBIOS ISO' 1 64M "${iso[@]}"
 check_boot 'OVMF ISO' 1 128M -bios /usr/share/ovmf/OVMF.fd "${iso[@]}"

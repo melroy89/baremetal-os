@@ -98,7 +98,7 @@ For **OVMF (UEFI)**, disable Secure Boot, leave **Pre-Enroll keys** unchecked if
 | Command   | Action                                                              |
 | --------- | ------------------------------------------------------------------- |
 | `help`    | List commands                                                       |
-| `info`    | Show the number of CPUs started and the usable RAM reported at boot |
+| `info`    | Show CPUs started, secondary stack pages, and usable RAM            |
 | `cpu`     | Show the boot CPU vendor, model, and capabilities                   |
 | `mem`     | Show how many 4 KiB pages the kernel manages, uses, and has free    |
 | `memmap`  | Show the memory ranges and types reported by Multiboot              |
@@ -109,7 +109,7 @@ For **OVMF (UEFI)**, disable Secure Boot, leave **Pre-Enroll keys** unchecked if
 | `reboot`  | Restart the QEMU guest                                              |
 | `halt`    | Power off the machine                                               |
 
-The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. The boot CPU runs the console and sleeps between keyboard and serial interrupts. There is currently no user space, filesystem, or networking stack.
+The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between keyboard and serial interrupts. There is currently no user space, filesystem, or networking stack.
 
 ## Credits
 

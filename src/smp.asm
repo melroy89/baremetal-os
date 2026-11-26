@@ -10,13 +10,19 @@ extern gdt64_ptr
 extern idt64_ptr
 extern pit_delay_us
 extern timer_ns
+extern _kernel_end
+extern page_init
+extern page_alloc
+extern pages_free
 
 section .text
 
 global smp_init
 global g_smp_total_cpus
 global g_smp_online_cpus
+global smp_stack_pages
 
+; rdi = Multiboot info.
 smp_init:
     push    rbx
     push    rbp
@@ -24,7 +30,7 @@ smp_init:
     push    r14
     push    r15
 
-    mov     dword [rel smp_next_tid], 1
+    mov     r14, rdi
     mov     dword [rel g_smp_online_cpus], 1
     mov     dword [rel g_smp_total_cpus], 1
 
@@ -56,14 +62,34 @@ smp_init:
 
     call    acpi_discover_madt
 
-    ; Copy 16-bit->32-bit->64-bit AP trampoline to 0x8000
     test    eax, eax
     jz      .wake_broadcast
 
-    ; MADT found: check how many APs to wake
+    ; With known targets, a valid map can make the unused fallback area
+    ; available to the allocator.
+    mov     rdi, r14
+    lea     rsi, [rel fallback_ap_stacks]
+    call    page_init
     mov     r15d, [rel n_ap_ids]
     test    r15d, r15d
     jz      .done
+    cmp     r15, [rel pages_free]
+    ja      .targeted_fallback
+    mov     edi, r15d
+    call    reserve_ap_stacks
+    cmp     eax, r15d
+    je      .start_targeted
+
+.targeted_fallback:
+    ; Reserve the full loader stack area before publishing any fallback
+    ; stacks. Reinitialization also discards any partial allocation.
+    mov     rdi, r14
+    lea     rsi, [rel _kernel_end]
+    call    page_init
+    mov     edi, r15d
+    call    use_fallback_ap_stacks
+
+.start_targeted:
     call    install_trampoline
 
     ; Step 1: Send INIT IPI to all target APs
@@ -135,6 +161,14 @@ smp_init:
 ; Fallback when ACPI MADT is unavailable (e.g. UEFI Multiboot 1 without BIOS RSDP):
 ; Uses Local APIC "All Excluding Self" shorthand INIT + SIPI.
 .wake_broadcast:
+    ; The number of CPUs that may arrive is unknown. Keep the loader's
+    ; stack reserve outside the allocator for the whole boot.
+    mov     rdi, r14
+    lea     rsi, [rel _kernel_end]
+    call    page_init
+    mov     byte [rel ap_broadcast], 1
+    mov     edi, OS_MAX_CPUS - 1
+    call    use_fallback_ap_stacks
     call    install_trampoline
     mov     dword [r13 + APIC_REG_ESR], 0
     mov     dword [r13 + APIC_REG_ICR_HI], 0
@@ -153,15 +187,55 @@ smp_init:
     mov     rdi, 25000
     call    pit_delay_us
 
-    mov     eax, [rel g_smp_online_cpus]
-    mov     [rel g_smp_total_cpus], eax
-
 .done:
     pop     r15
     pop     r14
     pop     r13
     pop     rbp
     pop     rbx
+    ret
+
+; Publish stacks before sending IPIs. Keep their pages even if a target
+; is still starting when the boot CPU stops waiting.
+reserve_ap_stacks:
+    push    rbx
+    push    r12
+    push    r14
+    mov     ebx, edi
+    xor     r12d, r12d
+    lea     r14, [rel ap_stack_tops]
+.next:
+    cmp     r12d, ebx
+    jae     .ready
+    call    page_alloc
+    test    rax, rax
+    jz      .ready
+    add     rax, PAGE_SIZE
+    mov     [r14 + r12 * 8], rax
+    inc     r12d
+    jmp     .next
+.ready:
+    mov     [rel ap_stack_count], r12d
+    mov     eax, r12d
+    pop     r14
+    pop     r12
+    pop     rbx
+    ret
+
+use_fallback_ap_stacks:
+    mov     byte [rel ap_fallback_mode], 1
+    mov     [rel ap_stack_count], edi
+    ret
+
+; On the fallback path, report stack pages in use rather than the size of
+; the loader's reserve. Allocator-backed pages count as used once assigned.
+smp_stack_pages:
+    mov     eax, [rel ap_stack_count]
+    cmp     byte [rel ap_fallback_mode], 0
+    je      .done
+    mov     eax, [rel g_smp_online_cpus]
+    dec     eax
+.done:
     ret
 
 ; ----------------------------------------------------------------------------
@@ -413,20 +487,22 @@ find_rsdp_in_range:
 ; 64-bit Application Processor Entry (jumped to from 0x8000 trampoline)
 ; ============================================================================
 ap_entry64:
-    ; Atomically claim unique processor index = 1, 2, 3, ...
+    ; Claim a published stack before executing any stack instructions.
     mov     eax, 1
-    lock xadd dword [rel smp_next_tid], eax
-    mov     r12d, eax                   ; r12 = processor index
-    cmp     r12, OS_MAX_CPUS
+    lock xadd dword [rel ap_next_stack], eax
+    cmp     eax, [rel ap_stack_count]
     jae     .ap_halt
-
-    ; Assign private 32 KiB 16-byte-aligned stack
-    mov     rax, r12
-    shl     rax, 15                     ; processor index * 32768
-    lea     rsp, [rel ap_stacks]
+    cmp     byte [rel ap_fallback_mode], 0
+    jne     .fallback_stack
+    lea     rdx, [rel ap_stack_tops]
+    mov     rsp, [rdx + rax * 8]
+    jmp     .stack_ready
+.fallback_stack:
+    shl     rax, PAGE_SHIFT
+    lea     rsp, [rel fallback_ap_stacks + PAGE_SIZE]
     add     rsp, rax
-    add     rsp, AP_STACK_SIZE          ; top of stack (16B aligned)
 
+.stack_ready:
     ; Switch to kernel's permanent GDT & exception IDT
     lgdt    [rel gdt64_ptr]
     mov     ax, 0x10
@@ -447,6 +523,10 @@ ap_entry64:
     shr     eax, 24
     lea     rcx, [rel ap_started]
     mov     byte [rcx + rax], 1
+    cmp     byte [rel ap_broadcast], 0
+    je      .online
+    lock inc dword [rel g_smp_total_cpus]
+.online:
     lock inc dword [rel g_smp_online_cpus]
 
 .ap_halt:
@@ -552,11 +632,17 @@ alignb 64
 g_smp_apic_base:   resq 1
 g_smp_total_cpus:  resd 1
 g_smp_online_cpus: resd 1
-smp_next_tid:      resd 1
+ap_next_stack:    resd 1
+ap_stack_count:   resd 1
 n_ap_ids:          resd 1
 bsp_apic_id:       resb 1
 ap_apic_ids:       resb OS_MAX_CPUS
 ap_started:        resb 256
+ap_fallback_mode:  resb 1
+ap_broadcast:      resb 1
 
-alignb 64
-ap_stacks:         resb OS_MAX_CPUS * AP_STACK_SIZE
+alignb 8
+ap_stack_tops:     resq OS_MAX_CPUS - 1
+
+section .ap_fallback nobits alloc noexec write align=4096
+fallback_ap_stacks: resb (OS_MAX_CPUS - 1) * PAGE_SIZE

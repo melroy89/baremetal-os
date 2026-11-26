@@ -8,7 +8,6 @@ default rel
 %define LOW_MEMORY_END 0x100000
 
 extern _kernel_start
-extern _kernel_end
 extern memory_map_walk
 
 section .text
@@ -18,10 +17,14 @@ global page_free
 global pages_managed
 global pages_free
 
-; rdi = Multiboot info. An absent or invalid map leaves the allocator empty.
+; rdi = Multiboot info, rsi = end of the kernel storage to keep reserved.
+; An absent or invalid map leaves the allocator empty.
 page_init:
     push    rbx
+    push    r12
+    sub     rsp, 8
     mov     rbx, rdi
+    mov     r12, rsi
     xor     eax, eax
     mov     [rel pages_managed], rax
     mov     [rel pages_free], rax
@@ -55,7 +58,7 @@ page_init:
     call    reserve_range
 
     lea     rdi, [rel _kernel_start]
-    lea     rsi, [rel _kernel_end]
+    mov     rsi, r12
     sub     rsi, rdi
     call    reserve_range
 
@@ -95,6 +98,8 @@ page_init:
     mov     [rel pages_managed], rdx
     mov     [rel pages_free], rdx
 .done:
+    add     rsp, 8
+    pop     r12
     pop     rbx
     ret
 

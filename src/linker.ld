@@ -44,7 +44,12 @@ SECTIONS
         _bss_end = .;
     } :data
 
-    . = ALIGN(4096);
+    /* The loader reserves these pages even without a detailed memory map. */
+    .ap_fallback ALIGN(4096) (NOLOAD) :
+    {
+        *(.ap_fallback)
+    } :data
+
     _kernel_end = .;
 
     /DISCARD/ :

@@ -83,5 +83,4 @@
 ; --- SMP / Stack sizing ---
 %define OS_MAX_CPUS         64
 %define BSP_STACK_SIZE      65536
-%define AP_STACK_SIZE       32768           ; 32 KiB per AP core (64 * 32K = 2 MiB in .bss)
 %define LINE_BUF_SIZE       1024
