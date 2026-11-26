@@ -19,14 +19,15 @@ default rel
 %define FILE_DATA (FILE_NAME + TAR_NAME_SIZE)
 
 %define INDEX_BUCKETS     2048
+; Archive addresses, file sizes, and allocator pages fit below 4 GiB.
 %define INDEX_HASH_NEXT   0
-%define INDEX_HEADER      8
-%define INDEX_FILE_SIZE   16
-%define INDEX_ORDER_NEXT  24
-%define INDEX_ORDER_LINK  32
-%define INDEX_SHADOWED    40
-%define INDEX_RECORD_SIZE 48
-%define INDEX_PAGE_DATA   8
+%define INDEX_HEADER      4
+%define INDEX_FILE_SIZE   8
+%define INDEX_ORDER_NEXT  12
+%define INDEX_ORDER_LINK  16
+%define INDEX_SHADOWED    20
+%define INDEX_RECORD_SIZE 24
+%define INDEX_PAGE_DATA   4
 %define INDEX_PAGE_RECORDS ((PAGE_SIZE - INDEX_PAGE_DATA) / INDEX_RECORD_SIZE)
 
 extern console_write
@@ -77,9 +78,9 @@ ramfs_mount:
     jae     .invalid
 
     lea     rax, [rel archive_index_seed]
-    mov     [rel archive_index_page], rax
+    mov     [rel archive_index_page], eax
     lea     rax, [rel archive_index_head]
-    mov     [rel archive_index_tail_link], rax
+    mov     [rel archive_index_tail_link], eax
     mov     r13, rbx
 .scan:
     mov     rdi, r13
@@ -132,30 +133,30 @@ index_archive_entry:
     call    allocate_index_record
     test    rax, rax
     jz      .done
-    mov     rcx, [r13]
-    mov     [rax + INDEX_HASH_NEXT], rcx
-    mov     [r13], rax
+    mov     ecx, [r13]
+    mov     [rax + INDEX_HASH_NEXT], ecx
+    mov     [r13], eax
     mov     byte [rax + INDEX_SHADOWED], 0
     jmp     .append
 
 .replace:
     ; Move the existing name to the position of its final occurrence.
-    mov     rcx, [rax + INDEX_ORDER_NEXT]
-    test    rcx, rcx
+    mov     ecx, [rax + INDEX_ORDER_NEXT]
+    test    ecx, ecx
     jz      .store
-    mov     rdx, [rax + INDEX_ORDER_LINK]
-    mov     [rdx], rcx
-    mov     [rcx + INDEX_ORDER_LINK], rdx
+    mov     edx, [rax + INDEX_ORDER_LINK]
+    mov     [rdx], ecx
+    mov     [rcx + INDEX_ORDER_LINK], edx
 .append:
-    mov     rcx, [rel archive_index_tail_link]
-    mov     [rax + INDEX_ORDER_LINK], rcx
-    mov     [rcx], rax
-    mov     qword [rax + INDEX_ORDER_NEXT], 0
+    mov     ecx, [rel archive_index_tail_link]
+    mov     [rax + INDEX_ORDER_LINK], ecx
+    mov     [rcx], eax
+    mov     dword [rax + INDEX_ORDER_NEXT], 0
     lea     rcx, [rax + INDEX_ORDER_NEXT]
-    mov     [rel archive_index_tail_link], rcx
+    mov     [rel archive_index_tail_link], ecx
 .store:
-    mov     [rax + INDEX_HEADER], rbx
-    mov     [rax + INDEX_FILE_SIZE], r12
+    mov     [rax + INDEX_HEADER], ebx
+    mov     [rax + INDEX_FILE_SIZE], r12d
 .done:
     pop     r13
     pop     r12
@@ -164,7 +165,7 @@ index_archive_entry:
 
 allocate_index_record:
     mov     ecx, [rel archive_index_used]
-    mov     rax, [rel archive_index_page]
+    mov     eax, [rel archive_index_page]
     cmp     ecx, INDEX_PAGE_RECORDS
     jb      .slot
     sub     rsp, 8
@@ -172,9 +173,9 @@ allocate_index_record:
     add     rsp, 8
     test    rax, rax
     jz      .done
-    mov     rcx, [rel archive_index_page]
-    mov     [rax], rcx
-    mov     [rel archive_index_page], rax
+    mov     ecx, [rel archive_index_page]
+    mov     [rax], ecx
+    mov     [rel archive_index_page], eax
     xor     ecx, ecx
 .slot:
     lea     edx, [rcx + 1]
@@ -188,20 +189,20 @@ discard_archive_index:
     push    rbx
     lea     rbx, [rel archive_index_seed]
 .free_page:
-    mov     rdi, [rel archive_index_page]
+    mov     edi, [rel archive_index_page]
     cmp     rdi, rbx
     je      .clear
-    mov     rax, [rdi]
-    mov     [rel archive_index_page], rax
+    mov     eax, [rdi]
+    mov     [rel archive_index_page], eax
     call    page_free
     jmp     .free_page
 .clear:
-    mov     qword [rel archive_index_head], 0
+    mov     dword [rel archive_index_head], 0
     mov     dword [rel archive_index_used], 0
     lea     rdi, [rel archive_index_buckets]
     mov     ecx, INDEX_BUCKETS
     xor     eax, eax
-    rep     stosq
+    rep     stosd
     pop     rbx
     ret
 
@@ -402,17 +403,17 @@ find_archived:
 .bucket:
     and     eax, INDEX_BUCKETS - 1
     lea     rbx, [rel archive_index_buckets]
-    lea     rbx, [rbx + rax * 8]
-    mov     r13, [rbx]
+    lea     rbx, [rbx + rax * 4]
+    mov     r13d, [rbx]
 .next:
     test    r13, r13
     jz      .done
     mov     rdi, r12
-    mov     rsi, [r13 + INDEX_HEADER]
+    mov     esi, [r13 + INDEX_HEADER]
     call    str_eq
     test    eax, eax
     jnz     .done
-    mov     r13, [r13 + INDEX_HASH_NEXT]
+    mov     r13d, [r13 + INDEX_HASH_NEXT]
     jmp     .next
 .done:
     mov     rax, r13
@@ -429,16 +430,16 @@ ramfs_ls:
     je      ramfs_unavailable
 .list:
     push    rbx
-    mov     rbx, [rel archive_index_head]
+    mov     ebx, [rel archive_index_head]
 .archive_entry:
     test    rbx, rbx
     jz      .writable
     cmp     byte [rbx + INDEX_SHADOWED], 0
     jne     .next_archive
-    mov     rdi, [rbx + INDEX_HEADER]
+    mov     edi, [rbx + INDEX_HEADER]
     call    print_filename
 .next_archive:
-    mov     rbx, [rbx + INDEX_ORDER_NEXT]
+    mov     ebx, [rbx + INDEX_ORDER_NEXT]
     jmp     .archive_entry
 .writable:
     mov     rbx, [rel writable_head]
@@ -476,8 +477,8 @@ ramfs_cat:
     call    find_archived
     test    rax, rax
     jz      .missing
-    mov     rdx, [rax + INDEX_FILE_SIZE]
-    mov     rax, [rax + INDEX_HEADER]
+    mov     edx, [rax + INDEX_FILE_SIZE]
+    mov     eax, [rax + INDEX_HEADER]
     add     rax, TAR_BLOCK
 .print:
     pop     r12
@@ -644,10 +645,10 @@ section .bss
 alignb 8
 archive_error: resq 1
 writable_head: resq 1
-archive_index_head: resq 1
-archive_index_tail_link: resq 1
-archive_index_page: resq 1
-archive_index_buckets: resq INDEX_BUCKETS
+archive_index_head: resd 1
+archive_index_tail_link: resd 1
+archive_index_page: resd 1
+archive_index_buckets: resd INDEX_BUCKETS
 ; Keep small archives usable even when the bootloader supplies no memory map.
 archive_index_seed: resb PAGE_SIZE
 archive_index_used: resd 1

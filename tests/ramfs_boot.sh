@@ -182,12 +182,12 @@ check_index_pages() {
     expect_serial 'baremetal> '
     printf 'ls\r' >&"$serial_write"
     expect_serial $'ls\r?\n'
-    for ((n = 1; n <= 180; n++)); do
+    for ((n = 1; n <= 350; n++)); do
         printf -v name 'file-%03d' "$n"
         expect_serial "^$name"$'\r?\n'
     done
     expect_serial '^baremetal> '
-    printf 'cat file-180\r' >&"$serial_write"
+    printf 'cat file-350\r' >&"$serial_write"
     expect_serial $'\r?\nLast file\r?\nbaremetal> '
 }
 
@@ -229,14 +229,14 @@ printf '9' | dd of="$files/corrupt.tar" bs=1 seek=$((1024 + 124)) conv=notrunc s
 
 # Span several index pages. The truncated copy fails after allocating a page.
 mkdir "$files/many"
-for ((n = 1; n <= 180; n++)); do
+for ((n = 1; n <= 350; n++)); do
     printf -v name 'file-%03d' "$n"
     touch "$files/many/$name"
     printf '%s\n' "$name"
 done > "$files/names"
-printf 'Last file\n' > "$files/many/file-180"
+printf 'Last file\n' > "$files/many/file-350"
 tar --format=ustar -C "$files/many" -cf "$files/many.tar" -T "$files/names"
-head -c $((99 * 512 + 1)) "$files/many.tar" > "$files/truncated-index.tar"
+head -c $((199 * 512 + 1)) "$files/many.tar" > "$files/truncated-index.tar"
 
 build_dir=${1:-build}
 kernel="$build_dir/baremetal-os.elf"

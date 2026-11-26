@@ -14,6 +14,8 @@ default rel
 
 %include "os_constants.inc"
 
+%define VGA_TEXT_CELLS  (0x8000 / 2)
+
 section .text
 
 global serial_init
@@ -108,6 +110,7 @@ vga_clear:
     mov     [rel vga_attr], dil
     mov     dword [rel vga_row], 0
     mov     dword [rel vga_col], 0
+    mov     dword [rel vga_start_cell], 0
     mov     dword [rel utf8_rem], 0
     mov     dword [rel utf8_cp], 0
 
@@ -120,8 +123,10 @@ vga_clear:
     mov     rdi, VGA_MEM
     mov     ecx, (VGA_COLS * VGA_ROWS) / 2
     rep     stosd
-    call    vga_update_cursor
-    ret
+    sub     rsp, 8
+    call    vga_update_start
+    add     rsp, 8
+    jmp     vga_update_cursor
 
 ; void vga_set_color(uint8 attr in dil)
 vga_set_color:
@@ -148,6 +153,7 @@ vga_update_cursor:
     mov     eax, [rel vga_row]
     imul    eax, eax, VGA_COLS
     add     eax, [rel vga_col]
+    add     eax, [rel vga_start_cell]
     mov     ecx, eax
 
     mov     dx, VGA_CRTC_IDX
@@ -165,16 +171,45 @@ vga_update_cursor:
     out     dx, al
     ret
 
+; Internal: set the CRTC start address in text cells.
+vga_update_start:
+    mov     ecx, [rel vga_start_cell]
+    mov     dx, VGA_CRTC_IDX
+    mov     al, 0x0D
+    out     dx, al
+    mov     dx, VGA_CRTC_DATA
+    mov     al, cl
+    out     dx, al
+    mov     dx, VGA_CRTC_IDX
+    mov     al, 0x0C
+    out     dx, al
+    mov     dx, VGA_CRTC_DATA
+    mov     al, ch
+    out     dx, al
+    ret
+
 ; Internal: scroll VGA screen up by 1 line
 vga_scroll:
     push    rdi
     push    rsi
     push    rcx
     mov     rdi, VGA_MEM
-    mov     rsi, VGA_MEM + (VGA_COLS * 2)
+    mov     eax, [rel vga_start_cell]
+    add     eax, VGA_COLS
+    cmp     eax, VGA_TEXT_CELLS - VGA_ROWS * VGA_COLS
+    jbe     .slide
+
+    ; Repack the visible rows only when the next row would leave the aperture.
+    lea     rsi, [rdi + rax * 2]
     mov     ecx, ((VGA_ROWS - 1) * VGA_COLS) / 2
     rep     movsd
+    xor     eax, eax
+    jmp     .clear_row
+.slide:
+    lea     rdi, [rdi + rax * 2 + (VGA_ROWS - 1) * VGA_COLS * 2]
 
+.clear_row:
+    mov     [rel vga_start_cell], eax
     ; Clear bottom row with current attribute
     movzx   eax, byte [rel vga_attr]
     shl     eax, 8
@@ -185,6 +220,7 @@ vga_scroll:
     mov     ecx, VGA_COLS / 2
     rep     stosd
     mov     dword [rel vga_row], VGA_ROWS - 1
+    call    vga_update_start
     pop     rcx
     pop     rsi
     pop     rdi
@@ -210,6 +246,7 @@ vga_emit_ascii:
     mov     ecx, [rel vga_row]
     imul    ecx, ecx, VGA_COLS
     add     ecx, [rel vga_col]
+    add     ecx, [rel vga_start_cell]
     mov     ah, [rel vga_attr]
     mov     rdx, VGA_MEM
     mov     [rdx + rcx*2], ax
@@ -238,6 +275,7 @@ vga_emit_ascii:
     mov     ecx, [rel vga_row]
     imul    ecx, ecx, VGA_COLS
     add     ecx, eax
+    add     ecx, [rel vga_start_cell]
     mov     ah, [rel vga_attr]
     mov     al, ' '
     mov     rdx, VGA_MEM
@@ -259,8 +297,7 @@ vga_emit_ascii:
     inc     eax
     cmp     eax, VGA_ROWS
     jb      .store_row
-    call    vga_scroll
-    ret
+    jmp     vga_scroll
 .store_row:
     mov     [rel vga_row], eax
 .ret:
@@ -832,6 +869,7 @@ g_tsc_hz:       resq 1
 g_tsc_mhz:      resq 1
 vga_row:        resd 1
 vga_col:        resd 1
+vga_start_cell: resd 1
 utf8_cp:        resd 1
 utf8_rem:       resd 1
 vga_attr:       resb 1

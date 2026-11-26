@@ -135,7 +135,7 @@ qemu-system-x86_64 -enable-kvm -cpu host -m 64M -nic none \
 
 At the prompt, try `ls` and `cat hello.txt`. Archive files are read-only. Writing to an archive filename creates a writable copy that takes precedence. Removing the copy makes the original visible again.
 
-The kernel indexes the archive when it boots, using additional pages for larger archives. If an archive contains the same filename more than once, `cat` reads the last entry and `ls` lists the filename once.
+The kernel indexes the archive at boot so `ls` and `cat` can find files quickly. The archive and its index share guest RAM. If the kernel reports that the index ran out of free pages, boot with more RAM. If an archive repeats a filename, `cat` reads the last entry and `ls` lists the filename once.
 
 When building from source, use `make os-run INITRAMFS=ramfs.tar` for the same setup. In a custom GRUB image, load the archive as the first boot module with `module /boot/ramfs.tar` after the `multiboot` command.
 
