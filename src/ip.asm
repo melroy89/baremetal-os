@@ -12,6 +12,10 @@ default rel
 %define ARP_RETRY 250000000
 %define PING_TIMEOUT 2000000000
 %define IP_SERVICE_INTERVAL_NS 20000000
+%define IP_PRESSURE_INTERVAL_NS 5000000
+%define IP_PRESSURE_HOLD_NS 40000000
+%define IP_RX_BUDGET 8
+%define IP_RX_PRESSURE_MIN 2
 
 %define MODE_RAW 0
 %define MODE_STATIC 1
@@ -139,6 +143,8 @@ ip_handover:
     pop     rdi
     call    net_rx_recycle
     mov     [rel ip_mode], bl
+    mov     qword [rel ip_pressure_until], 0
+    xor     esi, esi
     mov     edi, ebx
     call    net_timer
     pop     rbx
@@ -378,7 +384,7 @@ checksum_finish:
     not     ax
     ret
 
-; Foreground I/O yields at most once per timer interval.
+; Foreground I/O runs at most one batch per current service interval.
 ip_checkpoint:
     cmp     byte [rel ip_mode], MODE_RAW
     je      ip_service.idle
@@ -388,13 +394,20 @@ ip_checkpoint:
 ip_checkpoint_at:
     cmp     byte [rel ip_mode], MODE_RAW
     je      ip_service.idle
-    lea     rdx, [rax - IP_SERVICE_INTERVAL_NS]
-    cmp     rax, IP_SERVICE_INTERVAL_NS
+    mov     edx, IP_SERVICE_INTERVAL_NS
+    cmp     qword [rel ip_pressure_until], 0
+    je      .interval
+    mov     edx, IP_PRESSURE_INTERVAL_NS
+.interval:
+    cmp     rax, rdx
     jb      ip_service.idle
+    neg     rdx
+    add     rdx, rax
     cmp     rdx, [rel ip_now]
     jb      ip_service.idle
     jmp     ip_service.run
 
+; Return one when the RX budget was used. The console can check for more work.
 ip_service:
     cmp     byte [rel ip_mode], MODE_RAW
     je      .idle
@@ -411,7 +424,7 @@ ip_service:
     mov     [rel ip_now], rax
     call    dhcp_expire
     call    net_tx_complete
-    mov     ebx, 8
+    mov     ebx, IP_RX_BUDGET
 .receive:
     lea     rdi, [rel rx_frame]
     mov     esi, ETH + IP_MTU
@@ -426,12 +439,45 @@ ip_service:
     dec     ebx
     jnz     .receive
 .tick:
+    ; Ramp up after a full batch. Small batches let the fast rate expire.
+    mov     rax, [rel ip_now]
+    test    ebx, ebx
+    jz      .full
+    cmp     qword [rel ip_pressure_until], 0
+    je      .timers
+    cmp     ebx, IP_RX_BUDGET - IP_RX_PRESSURE_MIN
+    jbe     .extend_pressure
+    cmp     rax, [rel ip_pressure_until]
+    jb      .timers
+    mov     qword [rel ip_pressure_until], 0
+    xor     esi, esi
+    jmp     .set_timer
+.full:
+    cmp     qword [rel ip_pressure_until], 0
+    jne     .extend_pressure
+    add     rax, IP_PRESSURE_HOLD_NS
+    mov     [rel ip_pressure_until], rax
+    mov     esi, 1
+    jmp     .set_timer
+.extend_pressure:
+    add     rax, IP_PRESSURE_HOLD_NS
+    mov     [rel ip_pressure_until], rax
+    jmp     .timers
+.set_timer:
+    mov     edi, 1
+    call    net_timer
+.timers:
     call    dhcp_tick
     call    dns_tick
     call    ping_tick
+    xor     eax, eax
+    test    ebx, ebx
+    setz    al                       ; The receive budget was exhausted.
     pop     rbx
     mov     byte [rel ip_servicing], 0
+    ret
 .idle:
+    xor     eax, eax
     ret
 
 ; rdi = Ethernet frame, esi = size. Only NIC unicast or Ethernet broadcast.
@@ -915,6 +961,7 @@ config_changed: db "IPv4 configuration changed.", 10, 0
 section .bss
 alignb 8
 ip_now: resq 1
+ip_pressure_until: resq 1
 ping_deadline: resq 1
 arp_request_time: resq 1
 arp_cache: resb ARP_CACHE_SIZE * 24

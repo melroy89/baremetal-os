@@ -36,7 +36,7 @@ global console_clear
 global console_input_init
 global console_input_irq
 global net_timer, net_timer_irq
-extern ip_service, ip_checkpoint
+extern ip_service, ip_checkpoint, net_rx_boundary
 global console_readline
 global ps2_try_getc
 global pit_delay_us
@@ -776,7 +776,7 @@ console_input_irq:
     pop     rax
     iretq
 
-; edi = nonzero to enable networking's 50 Hz wakeup.
+; edi = nonzero to enable the network timer. esi = nonzero for 5 ms.
 net_timer:
     in      al, PIC_MASTER_DATA
     or      al, 1
@@ -786,6 +786,10 @@ net_timer:
     mov     al, 0x34                   ; Channel 0, periodic mode, low/high.
     out     0x43, al
     mov     ax, 23864
+    test    esi, esi
+    jz      .reload
+    mov     ax, 5966
+.reload:
     out     0x40, al
     mov     al, ah
     out     0x40, al
@@ -807,12 +811,17 @@ console_readline:
     push    rbx
     push    r12
     push    r13
+    push    r14
+    push    r15
     mov     r12, rdi                    ; buf
     lea     r13, [rsi - 1]              ; max chars (leave room for NUL)
     xor     ebx, ebx                    ; len = 0
 
+    mov     r14d, 3                   ; Allow three extra batches per HLT.
+
 .poll:
     call    ip_service
+    mov     r15d, eax
     call    serial_try_getc
     cmp     eax, -1
     jne     .got_char
@@ -826,11 +835,22 @@ console_readline:
     test    al, 1
     jnz     .poll
 .sleep:
+    test    r14d, r14d
+    jz      .halt
+    test    r15d, r15d
+    jz      .halt
+    call    net_rx_boundary
+    test    eax, eax
+    jz      .halt
+    dec     r14d
+    jmp     .poll
+.halt:
     ; Interrupts stay masked across the input check. STI defers interrupt
     ; delivery until after HLT so input arriving during the check wakes us.
     sti
     hlt
     cli
+    mov     r14d, 3
     jmp     .poll
 
 .got_char:
@@ -923,6 +943,8 @@ console_readline:
     mov     byte [r12 + rbx], 0
     mov     rax, -1
 .return:
+    pop     r15
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
