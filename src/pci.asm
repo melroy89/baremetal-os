@@ -21,24 +21,60 @@ extern str_eq
 
 section .text
 global command_lspci
+global pci_walk
+global pci_config_read32
+global pci_config_write16
 
 command_lspci:
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-
-    xor     ebx, ebx                   ; Exhaustive scan requested
+    push    0                          ; Listed device flag
+    xor     r8d, r8d
     cmp     byte [rdi], 0
-    je      .start
+    je      .walk
     lea     rsi, [rel pci_all_option]
     call    str_eq
     test    eax, eax
     jz      .usage
-    mov     ebx, 1
-.start:
-    ; Check the address register and restore its original value on exit.
+    mov     r8d, 1
+.walk:
+    lea     rdi, [rel pci_list_entry]
+    mov     rsi, rsp
+    mov     edx, r8d
+    call    pci_walk
+    test    eax, eax
+    js      .unavailable
+    cmp     qword [rsp], 0
+    jne     .done
+    lea     rdi, [rel pci_heading]
+    call    console_write_cstr
+    lea     rdi, [rel pci_empty]
+    jmp     .message
+.unavailable:
+    lea     rdi, [rel pci_unavailable]
+    jmp     .message
+.usage:
+    lea     rdi, [rel pci_usage]
+.message:
+    call    console_write_cstr
+.done:
+    add     rsp, 8
+    ret
+
+; rdi = visitor, rsi = context, edx != 0 for exhaustive scan.
+; Visitor receives edi = packed BDF, esi = vendor/device, rdx = context.
+; A nonzero visitor result stops the walk. Return 1 on stop, 0 on
+; completion, or -1 if configuration access is unavailable.
+pci_walk:
+    push    rbx
+    push    rbp
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     rbp, rsi
+    mov     r14d, edx
+
     mov     dx, PCI_CONFIG_ADDRESS
     in      eax, dx
     mov     r15d, eax
@@ -48,79 +84,130 @@ command_lspci:
     cmp     eax, PCI_CONFIG_ENABLE
     jne     .unavailable
 
-    lea     rdi, [rel pci_heading]
-    call    console_write_cstr
-    xor     r12d, r12d                 ; Bus and device, with function zero
-    xor     r14d, r14d                 ; At least one function was found
+    xor     r12d, r12d
 .slot:
-    mov     edi, r12d
-    mov     esi, PCI_VENDOR_DEVICE
-    call    pci_read_config32
-    cmp     ax, PCI_NO_VENDOR
-    je      .no_function_zero
-    mov     r14d, 1
-    mov     edi, r12d
-    mov     esi, eax
-    call    pci_print_entry
-
-    test    ebx, ebx
-    jnz     .scan_functions
+    mov     r13d, r12d
+    call    .visit_function
+    test    eax, eax
+    jg      .stopped
+    test    r14d, r14d
+    jnz     .next_function
+    test    eax, eax
+    js      .next_slot
     mov     edi, r12d
     mov     esi, PCI_HEADER_DWORD
     call    pci_read_config32
     test    eax, PCI_MULTIFUNCTION
     jz      .next_slot
-    jmp     .scan_functions
-.no_function_zero:
-    test    ebx, ebx
-    jz      .next_slot
-.scan_functions:
-    mov     r13d, r12d
 .next_function:
     inc     r13d
     test    r13d, PCI_FUNCTION_COUNT - 1
     jz      .next_slot
-    mov     edi, r13d
-    mov     esi, PCI_VENDOR_DEVICE
-    call    pci_read_config32
-    cmp     ax, PCI_NO_VENDOR
-    je      .next_function             ; Functions can be sparse.
-    mov     r14d, 1
-    mov     edi, r13d
-    mov     esi, eax
-    call    pci_print_entry
-    jmp     .next_function
-
+    call    .visit_function
+    test    eax, eax
+    jle     .next_function
+    jmp     .stopped
 .next_slot:
     add     r12d, PCI_FUNCTION_COUNT
     cmp     r12d, PCI_BUS_COUNT * PCI_SLOT_COUNT * PCI_FUNCTION_COUNT
     jb      .slot
-    test    r14d, r14d
-    jnz     .restore
-    lea     rdi, [rel pci_empty]
-    jmp     .message
+    xor     eax, eax
+    jmp     .restore
+.stopped:
+    mov     eax, 1
+    jmp     .restore
 .unavailable:
-    lea     rdi, [rel pci_unavailable]
-.message:
-    call    console_write_cstr
+    mov     eax, -1
 .restore:
+    mov     ecx, eax
     mov     dx, PCI_CONFIG_ADDRESS
     mov     eax, r15d
     out     dx, eax
-.done:
+    mov     eax, ecx
+    add     rsp, 8
     pop     r15
     pop     r14
     pop     r13
     pop     r12
+    pop     rbp
     pop     rbx
     ret
-.usage:
-    lea     rdi, [rel pci_usage]
-    call    console_write_cstr
-    jmp     .done
 
-; edi = (bus << 8) | (device << 3) | function. esi = dword-aligned offset.
-; Return the configuration dword in eax. The console is the only caller.
+.visit_function:
+    sub     rsp, 8
+    mov     edi, r13d
+    mov     esi, PCI_VENDOR_DEVICE
+    call    pci_read_config32
+    cmp     ax, PCI_NO_VENDOR
+    je      .absent
+    mov     edi, r13d
+    mov     esi, eax
+    mov     rdx, rbp
+    call    rbx
+    test    eax, eax
+    setnz   al
+    movzx   eax, al
+    jmp     .visited
+.absent:
+    mov     eax, -1
+.visited:
+    add     rsp, 8
+    ret
+
+pci_list_entry:
+    cmp     qword [rdx], 0
+    jne     .entry
+    mov     qword [rdx], 1
+    push    rdi
+    push    rsi
+    sub     rsp, 8
+    lea     rdi, [rel pci_heading]
+    call    console_write_cstr
+    add     rsp, 8
+    pop     rsi
+    pop     rdi
+.entry:
+    sub     rsp, 8
+    call    pci_print_entry
+    add     rsp, 8
+    xor     eax, eax
+    ret
+
+; edi = (bus << 8) | (slot << 3) | function, esi = aligned offset.
+; Public accesses restore the selector. Raw reads are used inside pci_walk.
+pci_config_read32:
+    mov     dx, PCI_CONFIG_ADDRESS
+    in      eax, dx
+    push    rax
+    call    pci_read_config32
+    mov     ecx, eax
+    pop     rax
+    mov     dx, PCI_CONFIG_ADDRESS
+    out     dx, eax
+    mov     eax, ecx
+    ret
+
+; edi = packed BDF, esi = word offset, edx = value.
+pci_config_write16:
+    mov     r8d, edx
+    mov     dx, PCI_CONFIG_ADDRESS
+    in      eax, dx
+    mov     r9d, eax
+    mov     eax, edi
+    shl     eax, 8
+    or      eax, esi
+    and     eax, -4
+    or      eax, PCI_CONFIG_ENABLE
+    out     dx, eax
+    and     esi, 2
+    lea     edx, [rsi + PCI_CONFIG_DATA]
+    mov     eax, r8d
+    out     dx, ax
+    mov     dx, PCI_CONFIG_ADDRESS
+    mov     eax, r9d
+    out     dx, eax
+    ret
+
 pci_read_config32:
     mov     eax, edi
     shl     eax, 8

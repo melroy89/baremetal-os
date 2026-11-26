@@ -105,22 +105,24 @@ check_cpu_ping() {
     done
 }
 
+build_dir="${1:-build}"
+kernel="$build_dir/baremetal-os.elf"
 build_id_pattern='^%define BUILD_ID "([0-9a-f]{12})"$'
-if ! IFS= read -r build_id_line < build/build_id.inc || [[ ! $build_id_line =~ $build_id_pattern ]]; then
-    printf 'Expected a generated build ID in build/build_id.inc\n' >&2
+if ! IFS= read -r build_id_line < "$build_dir/build_id.inc" || [[ ! $build_id_line =~ $build_id_pattern ]]; then
+    printf 'Expected a generated build ID in %s/build_id.inc\n' "$build_dir" >&2
     exit 1
 fi
 build_id=${BASH_REMATCH[1]}
 
-run_guest 'Direct kernel' 1 64M check_smoke -kernel build/baremetal-os.elf
-run_guest 'Direct kernel SMP' 4 64M check_smoke -kernel build/baremetal-os.elf
+run_guest 'Direct kernel' 1 64M check_smoke -kernel "$kernel"
+run_guest 'Direct kernel SMP' 4 64M check_smoke -kernel "$kernel"
 run_guest 'PCI network controllers' 1 64M check_pci_network_devices \
-    -machine pc -kernel build/baremetal-os.elf \
+    -machine pc -kernel "$kernel" \
     -device pci-bridge,chassis_nr=1,id=secondary,bus=pci.0,addr=0x6 \
     -device e1000,bus=pci.0,addr=0x7.2,multifunction=on \
     -device e1000,bus=pci.0,addr=0x8,multifunction=on \
     -device e1000,bus=pci.0,addr=0x8.2 \
     -device e1000,bus=secondary,addr=0x2
-iso=(-cdrom build/baremetal-os.iso -boot d)
+iso=(-cdrom "$build_dir/baremetal-os.iso" -boot d)
 run_guest 'SeaBIOS ISO' 1 64M check_smoke "${iso[@]}"
 run_guest 'OVMF ISO' 1 128M check_smoke -bios /usr/share/ovmf/OVMF.fd "${iso[@]}"

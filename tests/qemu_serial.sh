@@ -36,7 +36,7 @@ run_guest() (
     printf 'Booting %s with %s vCPU(s)\n' "$label" "$cpus"
     trap cleanup_guest EXIT
     coproc GUEST {
-        exec qemu-system-x86_64 -accel tcg -m "$ram" -smp "$cpus" -nic none \
+        exec qemu-system-x86_64 -accel "${QEMU_TEST_ACCEL:-tcg}" -m "$ram" -smp "$cpus" -nic none \
             -display none -serial stdio -monitor none "$@"
     }
     qemu_pid=$!
@@ -44,6 +44,18 @@ run_guest() (
     exec {serial_read}<&"${GUEST[0]}" {serial_write}>&"${GUEST[1]}"
 
     "$check" "$@"
+
+    if [[ ${QEMU_TEST_POWER_CUT:-0} == 1 ]]; then
+        kill -KILL "$qemu_pid"
+        wait "$qemu_pid" 2>/dev/null || status=$?
+        qemu_pid=
+        if (( status != 137 )); then
+            printf 'Expected the disposable guest to be stopped during disk I/O\n' >&2
+            return 1
+        fi
+        printf '%s passed\n' "$label"
+        return
+    fi
 
     printf 'halt\r' >&"$serial_write"
     expect_serial $'Powering off\\.\\.\\.\r?\n'

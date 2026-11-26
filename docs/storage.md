@@ -23,4 +23,6 @@ disk put note.txt NOTE.TXT
 disk unmount
 ```
 
-`disk put` creates or replaces a file. Replacement requires exclusive ownership of the old clusters. Unmount to flush pending writes before powering off.
+`disk put` creates or replaces a file. Replacement requires exclusive ownership of the old clusters. Unmount to flush writes before powering off.
+
+After an interrupted write, use `disk check` to count orphaned clusters without writing to the volume. Run `disk repair` to reclaim them. Repair requires a complete directory scan and agreement between FAT copies. You can also recover space on the host with `fsck.fat`.

@@ -24,6 +24,7 @@
 %define HIGH_MMIO_BASE       0xFE000000
 %define PAGE_SHIFT          12
 %define PAGE_SIZE           (1 << PAGE_SHIFT)
+%define BLOCK_SIZE          512
 
 ; --- Serial COM1 (0x3F8, 115200 8N1) ---
 %define COM1_PORT           0x3F8

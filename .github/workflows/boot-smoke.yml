@@ -25,19 +25,7 @@ jobs:
           sudo apt-get -o Acquire::Languages=none update
           sudo apt-get install -y --no-install-recommends \
             nasm grub-common grub-pc-bin grub-efi-amd64-bin \
-            mtools xorriso qemu-system-x86 ovmf-generic
+            mtools xorriso qemu-system-x86 qemu-utils ovmf-generic gdisk dosfstools socat
 
-      - name: Build the kernel and hybrid ISO
-        run: make -j"$(nproc)" os-check os-iso
-
-      - name: Test physical page allocation
-        run: make test-pages
-
-      - name: Boot the ELF and ISO in QEMU
-        run: bash tests/boot_smoke.sh
-
-      - name: Test SMP startup with constrained boot inputs
-        run: make -j"$(nproc)" test-smp
-
-      - name: Test the RAM filesystem
-        run: make test-ramfs
+      - name: Build and test
+        run: make -j"$(nproc)" --output-sync=target test

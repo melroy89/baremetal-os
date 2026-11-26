@@ -5,14 +5,15 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o crc32.o drivers.o echo.o kernel.o pages.o pci.o ramfs.o runtime.o smp.o)
+OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o fat32.o gpt.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
 RAM     ?= 64M
 SMP     ?= 1
 INITRAMFS ?=
 
-.PHONY: all os os-check os-run os-iso test-pages test-smp test-ramfs clean
+.PHONY: all os os-check os-run os-iso clean \
+	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage test-network
 
 all: os
 
@@ -25,6 +26,7 @@ $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -I$(BUILD)/ $< -o $@
 
 $(BUILD)/kernel.o: $(BUILD)/build_id.inc
+$(BUILD)/fat32.o: src/fat32_check.inc
 
 $(BUILD)/build_id.inc: $(BUILD_ID_INPUTS) | $(BUILD)
 	@hash=$$(sha256sum $(BUILD_ID_INPUTS)) && \
@@ -41,6 +43,11 @@ os-check: $(KERNEL)
 	grub-file --is-x86-multiboot $(KERNEL)
 	readelf -l $(KERNEL)
 
+test: os-check test-boot test-pages test-smp test-ramfs test-storage test-network
+
+test-boot: $(BUILD)/baremetal-os.iso
+	bash tests/boot_smoke.sh "$(BUILD)"
+
 $(BUILD)/test_pages.o: tests/page_allocator.asm src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ $< -o $@
 
@@ -49,7 +56,7 @@ $(BUILD)/test_pages: $(BUILD)/test_pages.o $(BUILD)/pages.o $(BUILD)/runtime.o
 		--defsym=_kernel_end=0x102000 $^ -o $@
 
 test-pages: $(BUILD)/test_pages
-	./$(BUILD)/test_pages
+	$(BUILD)/test_pages
 
 $(BUILD)/smp-fixture-%.o: tests/smp_boot_fixture.asm src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -DTEST_$* $< -o $@
@@ -71,6 +78,28 @@ test-smp: $(SMP_FIXTURES)
 
 test-ramfs: $(KERNEL) $(BUILD)/smp-fixture-one_page.elf
 	bash tests/ramfs_boot.sh "$(BUILD)"
+
+$(BUILD)/fat32-interrupt.o: tests/fat32_interrupt.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/fat32-interrupt.elf64: $(BUILD)/fat32-interrupt.o $(OBJECTS) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		--wrap=block_flush $(filter %.o,$^) -o $@
+
+$(BUILD)/fat32-interrupt.elf: $(BUILD)/fat32-interrupt.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
+
+test-storage: $(KERNEL) $(BUILD)/fat32-interrupt.elf
+	bash tests/storage_boot.sh "$(BUILD)"
+
+test-ata test-gpt: test-%: $(KERNEL)
+	bash tests/storage_boot.sh "$(BUILD)" "$*"
+
+test-fat32: $(KERNEL) $(BUILD)/fat32-interrupt.elf
+	bash tests/storage_boot.sh "$(BUILD)" fat32
+
+test-network: $(KERNEL)
+	bash tests/network_boot.sh "$(BUILD)"
 
 os-run: $(KERNEL)
 	$(QEMU) -enable-kvm -cpu host -m $(RAM) -smp $(SMP) -nic none \

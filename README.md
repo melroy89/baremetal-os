@@ -92,7 +92,9 @@ make os-iso
 
 The image is `build/baremetal-os.iso`. If you added a GRUB platform after building it, run `make -B os-iso` to rebuild it. To use the ELF or ISO with the run instructions above, run them from the `build/` directory.
 
-Run `make test-ata test-gpt test-fat32 test-network` for the device tests. They use QEMU, `qemu-img`, `sgdisk`, `dosfstools`, `mtools`, and `socat`.
+### Run the tests
+
+Run `make test` for the same suite as GitHub Actions, or use a focused target such as `make test-fat32` or `make test-boot`. The full suite needs the build and ISO tools above, plus QEMU, OVMF, `qemu-img`, `sgdisk`, `dosfstools`, and `socat`.
 
 ### Kernel overview
 

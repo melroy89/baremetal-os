@@ -11,11 +11,16 @@ extern write_hex32_raw
 
 section .text
 global crc32_buffer
+global crc32_update
 global command_crc32
 
 ; rdi = data, rsi = length in bytes. Return the checksum in eax.
 crc32_buffer:
-    mov     eax, -1
+    xor     edx, edx
+; rdi = data, rsi = length, edx = checksum of preceding bytes.
+crc32_update:
+    mov     eax, edx
+    not     eax
     lea     rdx, [rel crc32_table]
     test    rsi, rsi
     jz      .done

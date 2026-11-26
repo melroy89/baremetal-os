@@ -23,12 +23,10 @@ jobs:
           sudo apt-get -o Acquire::Languages=none update
           sudo apt-get install -y --no-install-recommends \
             nasm grub-common grub-pc-bin grub-efi-amd64-bin \
-            mtools xorriso qemu-system-x86 ovmf-generic
+            mtools xorriso qemu-system-x86 qemu-utils ovmf-generic gdisk dosfstools socat
 
       - name: Build and test the release
-        run: |
-          make -j"$(nproc)" os-check os-iso test-pages test-smp test-ramfs
-          bash tests/boot_smoke.sh
+        run: make -j"$(nproc)" --output-sync=target test
 
       - name: Verify the version and generate checksums
         working-directory: build

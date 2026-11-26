@@ -34,6 +34,8 @@ extern qemu_reboot
 extern command_cpu
 extern command_crc32
 extern command_lspci
+extern command_disk
+extern command_net
 extern ramfs_mount
 extern ramfs_ls
 extern ramfs_cat
@@ -323,6 +325,8 @@ help_text:
     help_row "mem",      "Show pages managed, used and free by the kernel"
     help_row "memmap",   "Show the Multiboot memory map"
     help_row "lspci",    "List PCI devices (--all checks every function)"
+    help_row "disk",     "Access the IDE disk, GPT partitions, and FAT32 files"
+    help_row "net",      "Show link info or receive and send Ethernet frames"
     help_row "ls",       "List files in the RAM filesystem"
     help_row "cat FILE", "Print a file from the RAM filesystem"
     help_row "crc32 FILE", "Show a RAM file's CRC-32 checksum"
@@ -362,6 +366,8 @@ cpu_name:          db "cpu", 0
 mem_name:          db "mem", 0
 memmap_name:       db "memmap", 0
 lspci_name:        db "lspci", 0
+disk_name:         db "disk", 0
+net_name:          db "net", 0
 ls_name:           db "ls", 0
 cat_name:          db "cat", 0
 crc32_name:        db "crc32", 0
@@ -385,6 +391,8 @@ commands:
     dq mem_name, command_mem, 0
     dq memmap_name, command_memmap, 0
     dq lspci_name, command_lspci, 1
+    dq disk_name, command_disk, 1
+    dq net_name, command_net, 1
     dq ls_name, ramfs_ls, 0
     dq cat_name, ramfs_cat, 1
     dq crc32_name, command_crc32, 1
