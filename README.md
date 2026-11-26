@@ -11,7 +11,7 @@ Download the latest release from [GitHub Releases](https://github.com/melroy89/b
 - `baremetal-os.elf` boots directly as a kernel in QEMU/KVM.
 - `baremetal-os.iso` boots as a CD/DVD image with BIOS or UEFI firmware.
 
-![Bare Metal OS running in QEMU/KVM, showing the memory map and output from the version, help, and cpu commands](assets/baremetal-os.png)
+![Bare Metal OS 1.1.0 running in QEMU/KVM, showing console help, CPU details, and page counts](assets/baremetal-os.png)
 
 ## Quick start
 
