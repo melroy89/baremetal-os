@@ -16,6 +16,7 @@ global str_eq
 global write_u64
 global write_hex64_raw
 global write_hex32_raw
+global format_hex_raw
 
 ; Walk the Multiboot map and call the visitor for each entry.
 ; rdi = Multiboot info, rsi = visitor, rdx = visitor context.
@@ -216,18 +217,25 @@ write_hex32_raw:
 
 write_hex_raw:
     sub     rsp, 24
+    mov     rdx, rsp
+    call    format_hex_raw
+    mov     rdi, rsp
+    call    console_write
+    add     rsp, 24
+    ret
+
+; rdi = value, esi = digit count (1..16), rdx = output buffer.
+; Writes exactly that many digits and preserves rsi and rdx.
+format_hex_raw:
     lea     r8, [rel hex_digits]
     mov     ecx, esi
 .next:
     mov     eax, edi
     and     eax, 0x0F
     mov     al, [r8 + rax]
-    mov     [rsp + rcx - 1], al
+    mov     [rdx + rcx - 1], al
     shr     rdi, 4
     loop    .next
-    mov     rdi, rsp
-    call    console_write
-    add     rsp, 24
     ret
 
 section .rodata

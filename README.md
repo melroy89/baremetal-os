@@ -56,6 +56,7 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 | `cpu ping` | Check which online secondary CPUs respond                        |
 | `mem`      | Show how many 4 KiB pages the kernel manages, uses, and has free |
 | `memmap`   | Show the memory ranges and types reported by Multiboot           |
+| `lspci`    | List PCI addresses, vendor and device IDs, and classes           |
 | `ls`       | List files in the RAM filesystem                                 |
 | `cat FILE` | Print a file from the RAM filesystem                             |
 | `crc32 FILE` | Show a RAM file's CRC-32 checksum                             |
@@ -71,6 +72,10 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 `cpu ping` sends an interrupt to each online secondary CPU and reports its reply or timeout. Run it again to retry after a timeout. In a four-vCPU guest, expect three replies. A one-vCPU guest has no secondary CPUs to ping.
 
 `crc32 FILE` prints the standard CRC-32 checksum of the file's bytes as eight hexadecimal digits. It uses a secondary CPU when one is ready, with the boot CPU as a fallback.
+
+`lspci` shows each device's `bus:device.function` address, vendor and device IDs, and a six-digit class code. The class code contains the class, subclass, and programming interface. The command reads PCI segment 0 through the legacy x86 configuration ports.
+
+Use `lspci --all` when a VM exposes a device at a higher function number without function 0. This slower scan probes every function.
 
 ## Run with libvirt
 

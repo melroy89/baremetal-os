@@ -97,7 +97,7 @@ check_archive() {
     expect_serial $'\r?\nHello from RAM\r?\nbaremetal> '
 
     printf 'help\r' >&"$serial_write"
-    for command_label in help info cpu 'cpu ping' mem memmap ls 'cat FILE' 'crc32 FILE' echo 'rm FILE' uptime log version clear reboot halt; do
+    for command_label in help info cpu 'cpu ping' mem memmap lspci ls 'cat FILE' 'crc32 FILE' echo 'rm FILE' uptime log version clear reboot halt; do
         printf -v padded_label '%-11s' "$command_label"
         expect_serial $'\r?\n'"$padded_label"'[^[:space:]]'
     done

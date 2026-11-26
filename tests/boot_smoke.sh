@@ -35,11 +35,58 @@ check_console() {
 check_smoke() {
     check_console
     check_cpu_ping
+    if (( cpus == 1 )); then
+        check_diskless_pci
+    fi
     if [[ $1 == -kernel ]]; then
         printf 'reboot\r' >&"$serial_write"
         expect_serial 'Rebooting\.\.\.'
         check_console
     fi
+}
+
+check_diskless_pci() {
+    local start=${#transcript} listing
+    local network_class=$'[[:blank:]]02[[:xdigit:]]{4}\r?\n'
+    printf 'lspci\r' >&"$serial_write"
+    expect_serial $'Address  Vendor:ID  Class\r?\n'
+    expect_serial $'00:00\\.0  8086:1237  060000\r?\n'
+    expect_serial 'baremetal> '
+    listing=${transcript:start}
+    if [[ $listing =~ $network_class ]]; then
+        printf 'The diskless guest unexpectedly listed a network controller\n' >&2
+        return 1
+    fi
+}
+
+check_pci_network_devices() {
+    local start listing
+    expect_serial 'baremetal> '
+    start=${#transcript}
+    printf 'lspci\r' >&"$serial_write"
+    expect_serial $'Address  Vendor:ID  Class\r?\n'
+    expect_serial $'00:06\\.0  1B36:0001  060400\r?\n'
+    expect_serial $'00:08\\.0  8086:100E  020000\r?\n'
+    expect_serial $'00:08\\.2  8086:100E  020000\r?\n'
+    expect_serial $'01:02\\.0  8086:100E  020000\r?\n'
+    expect_serial 'baremetal> '
+    listing=${transcript:start}
+    if [[ $listing == *'00:07.2  8086:100E  020000'* ]]; then
+        printf 'The default scan unexpectedly probed a slot without function zero\n' >&2
+        return 1
+    fi
+
+    printf 'lspci --all\r' >&"$serial_write"
+    expect_serial $'Address  Vendor:ID  Class\r?\n'
+    expect_serial $'00:06\\.0  1B36:0001  060400\r?\n'
+    expect_serial $'00:07\\.2  8086:100E  020000\r?\n'
+    expect_serial $'00:08\\.0  8086:100E  020000\r?\n'
+    expect_serial $'00:08\\.2  8086:100E  020000\r?\n'
+    expect_serial $'01:02\\.0  8086:100E  020000\r?\n'
+    expect_serial 'baremetal> '
+
+    printf 'lspci --invalid\r' >&"$serial_write"
+    expect_serial $'Usage: lspci \\[--all\\]\r?\nbaremetal> '
 }
 
 check_cpu_ping() {
@@ -67,6 +114,13 @@ build_id=${BASH_REMATCH[1]}
 
 run_guest 'Direct kernel' 1 64M check_smoke -kernel build/baremetal-os.elf
 run_guest 'Direct kernel SMP' 4 64M check_smoke -kernel build/baremetal-os.elf
+run_guest 'PCI network controllers' 1 64M check_pci_network_devices \
+    -machine pc -kernel build/baremetal-os.elf \
+    -device pci-bridge,chassis_nr=1,id=secondary,bus=pci.0,addr=0x6 \
+    -device e1000,bus=pci.0,addr=0x7.2,multifunction=on \
+    -device e1000,bus=pci.0,addr=0x8,multifunction=on \
+    -device e1000,bus=pci.0,addr=0x8.2 \
+    -device e1000,bus=secondary,addr=0x2
 iso=(-cdrom build/baremetal-os.iso -boot d)
 run_guest 'SeaBIOS ISO' 1 64M check_smoke "${iso[@]}"
 run_guest 'OVMF ISO' 1 128M check_smoke -bios /usr/share/ovmf/OVMF.fd "${iso[@]}"

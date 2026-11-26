@@ -5,7 +5,7 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o crc32.o drivers.o echo.o kernel.o pages.o ramfs.o runtime.o smp.o)
+OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o crc32.o drivers.o echo.o kernel.o pages.o pci.o ramfs.o runtime.o smp.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
 RAM     ?= 64M
