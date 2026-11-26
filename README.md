@@ -7,7 +7,7 @@ Bare Metal OS is a small operating system written in x86-64 assembly and designe
 **Key features**
 
 - Fast direct kernel boot in QEMU/KVM, plus ISO boot on BIOS and UEFI.
-- GPT partition inspection and volume mounting, with writable FAT32, read-only ext2, and a built-in RAM filesystem.
+- GPT partition inspection and volume mounting, with writable FAT32, ext2, and a built-in RAM filesystem.
 - Browse multiple mounted volumes with `cd` and `ls`, read files with `cat`, and copy them between volumes with `cp`.
 - Multicore startup and tools to inspect CPUs, memory, and PCI devices.
 - IPv4 networking with ARP, UDP, `ping`, a DHCP client, and DNS lookups.
