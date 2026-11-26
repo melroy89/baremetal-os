@@ -62,6 +62,7 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 | `cat PATH`, `rm PATH`      | Read or remove a file.                             |
 | `echo [TEXT] > PATH`       | Write text to a file.                              |
 | `touch PATH`               | Create an empty file.                              |
+| `cp SOURCE DEST`           | Copy a file.                                       |
 | `mount [disk0pN /NAME]`    | List volumes or mount an IDE partition.            |
 | `umount /NAME`             | Unmount a named volume.                            |
 | `uptime`, `log`, `version` | Check runtime, boot milestones, and build details. |

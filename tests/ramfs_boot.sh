@@ -14,6 +14,24 @@ check_root() {
     expect_serial $'\r?\n/\r?\nbaremetal> '
 }
 
+check_copy_quotes() {
+    printf '%s\r' 'echo Quoted data > seed.txt' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf '%s\r' 'cp seed.txt a"b.txt' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf '%s\r' 'cp a"b.txt "a \"b.txt"' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf '%s\r' 'cp "a \"b.txt" copied.txt' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf '%s\r' 'cat copied.txt' >&"$serial_write"
+    expect_serial $'\r?\nQuoted data\r?\nbaremetal> '
+    local path
+    for path in seed.txt 'a"b.txt' 'a "b.txt' copied.txt; do
+        printf 'rm %s\r' "$path" >&"$serial_write"
+        expect_serial 'baremetal> '
+    done
+}
+
 check_no_archive() {
     expect_serial 'baremetal> '
     check_root
@@ -39,6 +57,7 @@ check_no_archive() {
     printf 'cat hello.txt\r' >&"$serial_write"
     expect_serial 'No RAM filesystem loaded\.'
     expect_serial 'baremetal> '
+    check_copy_quotes
 
     printf 'echo "This is some text"\r' >&"$serial_write"
     expect_serial $'\r?\nThis is some text\r?\nbaremetal> '
@@ -132,7 +151,7 @@ check_archive() {
     expect_serial $'\r?\nHello from RAM\r?\nbaremetal> '
 
     printf 'help\r' >&"$serial_write"
-    for command_label in help info cpu 'cpu ping' mem memmap lspci disk net 'ls [PATH]' 'cd PATH' pwd mount umount 'cat FILE' 'crc32 FILE' echo 'touch PATH' 'rm FILE' uptime log version clear reboot halt; do
+    for command_label in help info cpu 'cpu ping' mem memmap lspci disk net 'ls [PATH]' 'cd PATH' pwd mount umount 'cat PATH' 'crc32 FILE' echo 'cp SRC DST' 'touch PATH' 'rm PATH' uptime log version clear reboot halt; do
         printf -v padded_label '%-11s' "$command_label"
         padded_label=${padded_label//\[/\\[}
         padded_label=${padded_label//\]/\\]}

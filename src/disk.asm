@@ -9,13 +9,8 @@ extern block_read
 extern block_count
 extern block_model
 extern command_gpt
-extern disk_mount_default
-extern disk_ls_default
-extern disk_cat_default
-extern disk_put_default
 extern disk_check_volume
 extern disk_repair_volume
-extern disk_unmount_default
 extern crc32_buffer
 extern console_write_cstr
 extern console_putc
@@ -154,15 +149,9 @@ section .rodata
 info_name:      db "info", 0
 crc_name:       db "crc32", 0
 gpt_name:       db "gpt", 0
-mount_name:     db "mount", 0
-list_name:      db "ls", 0
-cat_name:       db "cat", 0
-put_name:       db "put", 0
 check_name:     db "check", 0
 repair_name:    db "repair", 0
-unmount_name:   db "unmount", 0
-disk_usage:     db "Usage: disk info | crc32 LBA | gpt | mount N | ls | cat NAME | put RAMFILE NAME", 10
-                db "       disk check [PATH] | repair [PATH] | unmount", 10, 0
+disk_usage:     db "Usage: disk info | crc32 LBA | gpt | check [PATH] | repair [PATH]", 10, 0
 invalid_lba:    db "Invalid decimal LBA.", 10, 0
 
 align 8
@@ -170,13 +159,8 @@ operations:
     dq info_name, disk_info, 0
     dq crc_name, disk_crc, 1
     dq gpt_name, command_gpt, 0
-    dq mount_name, disk_mount_default, 1
-    dq list_name, disk_ls_default, 0
-    dq cat_name, disk_cat_default, 1
-    dq put_name, disk_put_default, 1
     dq check_name, disk_check_volume, 2
     dq repair_name, disk_repair_volume, 2
-    dq unmount_name, disk_unmount_default, 0
     dq 0
 model_label:    db "ATA disk: ", 0
 geometry_label: db 10, "Logical sector size: 512 bytes", 10, "Sectors: ", 0

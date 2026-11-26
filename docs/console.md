@@ -23,7 +23,7 @@ Type `help` at the `baremetal>` prompt for the full command list.
 
 ## IDE storage
 
-Use `disk info` to inspect the disk, `disk gpt` to find partitions, and `disk mount N` to open a FAT32 volume.
+Use `disk info` to inspect the disk and `disk gpt` to list its partitions. Use `mount disk0pN /disk`, where `N` is the GPT partition number of the FAT32 volume you want to mount.
 
 For more info read: [IDE storage and file commands](storage.md).
 
@@ -45,6 +45,7 @@ The console starts at `/`. Use `ls` there to see mounted volumes, or `cd /ram` t
 | `cat PATH`           | Print a file.                                        |
 | `echo [TEXT]`        | Print text and a newline.                            |
 | `echo [TEXT] > PATH` | Write text and a newline to a file.                  |
+| `cp SOURCE DEST`     | Copy a file between or within mounted volumes.       |
 | `touch PATH`         | Create an empty file. Existing files stay unchanged. |
 | `rm PATH`            | Remove a writable file.                              |
 | `crc32 FILE`         | Checksum a file in `/ram` from anywhere.             |
@@ -58,6 +59,8 @@ rm comparison.txt
 ```
 
 Double quotes let you include a literal `>` in the text. Files in `/ram` disappear on reboot.
+
+For `cp`, put paths containing spaces in double quotes. Inside quotes, use `\"` for a literal double quote and `\\` for a literal backslash.
 
 ### Optional boot archive
 

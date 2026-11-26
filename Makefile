@@ -27,7 +27,8 @@ $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -I$(BUILD)/ $< -o $@
 
 $(BUILD)/kernel.o: $(BUILD)/build_id.inc
-$(BUILD)/fat32.o: src/fat32_check.inc
+$(BUILD)/fat32.o: src/fat32_check.inc src/fat32_copy.inc
+$(BUILD)/vfs.o: src/vfs_copy.inc
 $(BUILD)/fat32.o $(BUILD)/vfs.o: src/fat32_mount.inc
 
 $(BUILD)/build_id.inc: $(BUILD_ID_INPUTS) | $(BUILD)

@@ -38,7 +38,7 @@ extern command_disk
 extern command_net
 extern ramfs_mount
 extern command_ls, command_cat, command_rm, command_cd, command_pwd
-extern command_touch
+extern command_touch, command_cp
 extern command_mount, command_umount
 extern command_echo
 
@@ -325,18 +325,19 @@ help_text:
     help_row "mem",      "Show pages managed, used and free by the kernel"
     help_row "memmap",   "Show the Multiboot memory map"
     help_row "lspci",    "List PCI devices (--all checks every function)"
-    help_row "disk",     "Access the IDE disk, GPT partitions, and FAT32 files"
+    help_row "disk",     "Inspect disks and GPT partitions, or check and repair FAT32"
     help_row "net",      "Show link info or receive and send Ethernet frames"
     help_row "ls [PATH]", "List a directory or show mounts at /"
     help_row "cd PATH", "Change the current directory"
     help_row "pwd", "Print the current directory"
-    help_row "mount", "List or mount FAT32 volumes"
-    help_row "umount",   "Unmount a volume by path"
-    help_row "cat FILE", "Print a file"
+    help_row "mount",    "List volumes or run mount disk0pN /NAME"
+    help_row "umount",   "Unmount the volume at /NAME"
+    help_row "cat PATH", "Print a file"
     help_row "crc32 FILE", "Show a RAM file's CRC-32 checksum"
     help_row "echo",     "Print text or write it to a file with >"
+    help_row "cp SRC DST", "Copy a file"
     help_row "touch PATH", "Create an empty file if it does not exist"
-    help_row "rm FILE",  "Remove a writable file"
+    help_row "rm PATH",  "Remove a writable file"
     help_row "uptime",   "Show time since boot"
     help_row "log",      "Show boot milestones"
     help_row "version",  "Show the kernel version and build identifier"
@@ -382,6 +383,7 @@ cat_name:          db "cat", 0
 crc32_name:        db "crc32", 0
 echo_name:         db "echo", 0
 rm_name:           db "rm", 0
+cp_name:           db "cp", 0
 touch_name:        db "touch", 0
 uptime_name:       db "uptime", 0
 log_name:          db "log", 0
@@ -411,6 +413,7 @@ commands:
     dq cat_name, command_cat, 1
     dq crc32_name, command_crc32, 1
     dq echo_name, command_echo, 1
+    dq cp_name, command_cp, 1
     dq touch_name, command_touch, 1
     dq rm_name, command_rm, 1
     dq uptime_name, command_uptime, 0

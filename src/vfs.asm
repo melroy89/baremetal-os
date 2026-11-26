@@ -21,7 +21,7 @@ struc path_state
 endstruc
 
 extern ramfs_ls, ramfs_cat, ramfs_write, ramfs_rm, ramfs_touch
-extern fat_mount, fat_unmount, fat_list, fat_cat, fat_put
+extern fat_mount, fat_unmount, fat_list, fat_cat
 extern fat_write, fat_rm, fat_touch, fat_find_dir, fat_check, fat_repair
 extern fat_validate_root
 extern console_write_cstr, console_putc, str_eq
@@ -29,8 +29,7 @@ extern console_write_cstr, console_putc, str_eq
 section .text
 global command_ls, command_cat, command_rm, command_touch, command_cd, command_pwd
 global vfs_write, command_mount, command_umount, vfs_mount_overlap
-global disk_mount_default, disk_unmount_default, disk_ls_default
-global disk_cat_default, disk_put_default, disk_check_volume, disk_repair_volume
+global disk_check_volume, disk_repair_volume
 
 command_pwd:
     lea     rdi, [rel current_path + path_state.text]
@@ -420,11 +419,6 @@ command_mount:
     cmp     byte [rsi], '/'
     jne     mount_usage
     inc     rsi
-    jmp     mount_named
-
-disk_mount_default:
-    lea     rsi, [rel disk_name]
-mount_named:
     push    rbp
     push    r12
     push    r13
@@ -544,13 +538,6 @@ command_umount:
     sub     rsp, 8
     call    select_volume
     add     rsp, 8
-    jmp     unmount_selected
-
-disk_unmount_default:
-    sub     rsp, 8
-    call    default_volume
-    add     rsp, 8
-unmount_selected:
     test    rax, rax
     jz      mount_missing
     mov     rcx, [rel current_path + path_state.depth]
@@ -578,9 +565,6 @@ unmount_selected:
     jz      .missing
     mov     rbp, rax
     mov     rdi, r12
-    %ifidni %3, fat_list
-        xor edi, edi
-    %endif
     xor     esi, esi
     call    %3
     add     rsp, 8
@@ -594,9 +578,6 @@ unmount_selected:
     jmp     mount_missing
 %endmacro
 
-disk_wrapper disk_ls_default, default_volume, fat_list
-disk_wrapper disk_cat_default, default_volume, fat_cat
-disk_wrapper disk_put_default, default_volume, fat_put
 disk_wrapper disk_check_volume, select_volume, fat_check
 disk_wrapper disk_repair_volume, select_volume, fat_repair
 
@@ -657,3 +638,5 @@ fat_mounts:   resb FAT_MOUNT_COUNT * fat_volume_size
 current_path: resb path_state_size   ; The zeroed state represents / at boot.
 work_path:    resb path_state_size
 component:    resb LINE_BUF_SIZE
+
+%include "vfs_copy.inc"

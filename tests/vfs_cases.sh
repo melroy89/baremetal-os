@@ -3,7 +3,7 @@
 check_vfs_files() {
     expect_serial 'baremetal> '
     console_check 'pwd' $'\r?\n/\r?\n'
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'ls /' $'\r?\n/ram\r?\n/disk\r?\n'
     console_check 'echo RAM > /ram/name with spaces' 'echo RAM'
     console_check 'cat /ram/name with spaces' $'\r?\nRAM\r?\n'
@@ -13,8 +13,8 @@ check_vfs_files() {
     console_check 'echo "Left > right">note.txt' 'Disk file saved\.'
     console_check 'echo "" > /disk/empty1.txt' 'Disk file saved\.'
     console_check 'echo >/disk/empty2.txt' 'Disk file saved\.'
-    console_check 'disk put no newline.txt raw.txt' 'Disk file saved\.'
-    console_check 'disk put empty.txt zero.txt' 'Disk file saved\.'
+    console_check 'cp "/ram/no newline.txt" /disk/raw.txt' 'Disk file saved\.'
+    console_check 'cp /ram/empty.txt /disk/zero.txt' 'Disk file saved\.'
     console_check 'crc32 no newline.txt' "$raw_crc"$'\r?\n'
     console_check 'echo Files here > /file.txt' 'Expected a file path, found a directory\.'
     console_check 'rm /disk' 'Expected a file path, found a directory\.'
@@ -27,76 +27,76 @@ check_vfs_files() {
     console_check 'touch /disk/subdir' 'Disk name refers to a directory\.'
     console_check 'echo Saved > nested.txt' 'Disk file saved\.'
     console_check 'cat nested.txt' $'\r?\nSaved\r?\n'
-    console_check 'disk cat host.txt' $'\r?\nHost seeded\r?\n'
-    console_check 'disk unmount' 'Current directory is on this volume\.'
+    console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
+    console_check 'umount /disk' 'Current directory is on this volume\.'
     console_check 'cd ../..' 'cd \.\./\.\.'
     console_check 'cd ..' 'cd \.\.'
     console_check 'pwd' $'\r?\n/\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
     console_check 'reboot' 'Rebooting'
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'cat /disk/note.txt' $'\r?\nLeft > right\r?\n'
     console_check 'cat /disk/subdir/nested.txt' $'\r?\nSaved\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_touch_existing() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     printf 'touch /disk/host.txt\r' >&"$serial_write"
     expect_serial $'touch /disk/host\\.txt\r?\nbaremetal> '
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_existing_file_refusals() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo Replacement > /ram/msg' 'echo Replacement'
     console_check 'echo Replacement > /disk/host.txt' "$refusal"
-    console_check 'disk put msg host.txt' "$refusal"
+    console_check 'cp /ram/msg /disk/host.txt' "$refusal"
     console_check 'rm /disk/host.txt' "$refusal"
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_invalid_file_commands() {
     local padding
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo "unterminated > /disk/host.txt' 'Usage: echo'
     console_check 'echo invalid >> /disk/host.txt' 'Usage: echo'
     printf -v padding '%01024d' 0
     console_check "echo ${padding}>/disk/host.txt" 'Command too long\.'
     console_check 'rm /disk' 'Expected a file path, found a directory\.'
     console_check 'rm /disk/subdir' 'Disk name refers to a directory\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_vfs_lfn() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo "Alias replacement" > /disk/longfi~1.txt' 'Disk file saved\.'
     console_check 'cat /disk/longfi~1.txt' $'\r?\nAlias replacement\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_vfs_remove() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check "rm /disk/$remove_name" "rm /disk/$remove_name"
     console_check "cat /disk/$remove_name" 'Disk file not found\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_lfn_remove_refusal() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'rm /disk/longfi~1.txt' 'Cannot remove a FAT32 file with long-name entries\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_deletion_interrupted() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     printf 'rm /disk/cut.txt\r' >&"$serial_write"
     expect_serial 'Test: second FAT32 flush complete\.'
 }
@@ -104,7 +104,7 @@ check_deletion_interrupted() {
 check_replacement_interrupted() {
     local replacement
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     printf -v replacement '%0600d' 1
     printf 'echo %s > /disk/host.txt\r' "$replacement" >&"$serial_write"
     expect_serial 'Test: second FAT32 flush complete\.'
@@ -112,30 +112,31 @@ check_replacement_interrupted() {
 
 check_deletion_check() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'cat /disk/cut.txt' 'Disk file not found\.'
     console_check 'disk check' $'Orphaned FAT32 clusters: 2\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_deletion_repair() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'disk repair' $'Reclaimed FAT32 clusters: 2\r?\n'
     console_check 'cat /disk/cut.txt' 'Disk file not found\.'
     console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_mount_volumes() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'mount disk0p2 /backup' 'FAT32 mounted\.'
     console_check 'mount' $'\r?\n/ram\r?\n/disk\r?\n/backup\r?\n'
     console_check 'mount disk0p2 /duplicate' 'Partition overlaps an active mount\.'
     console_check 'cd /backup' 'cd /backup'
     console_check 'umount /backup/' 'Current directory is on this volume\.'
     console_check 'echo Backup > host.txt' 'Disk file saved\.'
+    console_check 'cp /backup/host.txt /disk/copied.txt' 'Disk file saved\.'
     console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
     console_check 'cat host.txt' $'\r?\nBackup\r?\n'
     console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
@@ -148,7 +149,7 @@ check_mount_volumes() {
         console_check "disk check $invalid" 'No FAT32 volume mounted\.'
         console_check "disk repair $invalid" 'No FAT32 volume mounted\.'
     done
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
     console_check 'disk check' 'No FAT32 volume mounted\.'
     console_check 'cat host.txt' $'\r?\nBackup\r?\n'
     console_check 'cd /' 'cd /'
@@ -157,7 +158,7 @@ check_mount_volumes() {
 
 check_mount_fault() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'mount disk0p2 /backup' 'FAT32 mounted\.'
     console_check 'echo Fail > /disk/host.txt' 'Test: ATA write failed\.'
     console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
@@ -165,13 +166,13 @@ check_mount_fault() {
     console_check 'disk repair' 'FAT32 writes stopped'
     console_check 'rm /disk/host.txt' 'FAT32 writes stopped'
     console_check 'echo OK > /backup/fault.txt' 'Disk file saved\.'
-    console_check 'disk unmount' 'Test: ATA flush failed\.'
+    console_check 'umount /disk' 'Test: ATA flush failed\.'
     console_check 'mount disk0p1 /duplicate' 'Partition overlaps an active mount\.'
     console_check 'echo Still blocked > /disk/host.txt' 'FAT32 writes stopped'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo Remounted > /disk/host.txt' 'Disk file saved\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
     console_check 'umount /backup' 'FAT32 unmounted\.'
 }
 
@@ -179,26 +180,26 @@ check_mount_overlap() {
     expect_serial 'baremetal> '
     console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'mount disk0p2 /backup' 'Partition overlaps an active mount\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_directory_growth() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo First > /disk/subdir/next.txt' 'Disk file saved\.'
     console_check 'echo Second > /disk/subdir/after.txt' 'Disk file saved\.'
     console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
     console_check 'reboot' 'Rebooting'
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'cat /disk/subdir/nested.txt' $'\r?\nPeer seeded\r?\n'
     console_check 'cat /disk/subdir/next.txt' $'\r?\nFirst\r?\n'
     console_check 'cat /disk/subdir/after.txt' $'\r?\nSecond\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_growth_power_cut() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     printf 'echo First > /disk/subdir/next.txt\r' >&"$serial_write"
     expect_serial 'Test: second FAT32 flush complete\.'
 }
@@ -206,7 +207,7 @@ check_growth_power_cut() {
 check_deep_directory_tree() {
     local pages_in_use
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check "cat /disk/$guest_deep_path/leaf.txt" $'\r?\nPeer seeded\r?\n'
     printf 'mem\r' >&"$serial_write"
     expect_serial '4 KiB pages: [0-9]+ managed, ([0-9]+) used,'
@@ -215,18 +216,18 @@ check_deep_directory_tree() {
     console_check 'echo Saved > /disk/root.txt' 'Disk file saved\.'
     console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
     console_check 'mem' "4 KiB pages: [0-9]+ managed, $pages_in_use used,"
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_corrupt_root_traversal() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'cd /disk' 'Invalid or unsupported FAT32 cluster chain\.'
     console_check 'pwd' $'\r?\n/\r?\n'
     console_check 'cd /disk/..' 'Invalid or unsupported FAT32 cluster chain\.'
     console_check 'pwd' $'\r?\n/\r?\n'
     console_check 'disk check /disk' 'FAT32 check failed: cluster ownership could not be verified\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 # Verify a rejected operation against the same on-disk bytes seen at boot.
@@ -475,6 +476,7 @@ run_vfs_fixtures() {
         -machine pc -kernel "$kernel" -drive "file=$image,format=raw,if=ide,index=0"
     mtype -i "$image@@1048576" ::HOST.TXT | cmp - "$files/host.txt"
     mtype -i "$image@@68157440" ::HOST.TXT | cmp - <(printf 'Backup\n')
+    mtype -i "$image@@1048576" ::COPIED.TXT | cmp - <(printf 'Backup\n')
     run_guest 'FAT32 write error stays latched until a successful unmount' 1 64M check_mount_fault \
         -machine pc -kernel "$build_dir/fat32-fault.elf" -drive "file=$files/mount-fault.raw,format=raw,if=ide,index=0"
     mtype -i "$files/mount-fault.raw@@1048576" ::HOST.TXT | cmp - <(printf 'Remounted\n')

@@ -45,103 +45,114 @@ check_gpt_backup() {
 check_gpt_invalid() {
     expect_serial 'baremetal> '
     console_check 'disk gpt' 'No valid supported GPT\.'
-    console_check 'disk mount 1' 'No valid supported GPT\.'
+    console_check 'mount disk0p1 /disk' 'No valid supported GPT\.'
 }
 
 check_fat_read() {
     expect_serial 'baremetal> '
-    console_check 'disk ls' 'No FAT32 volume mounted\.'
-    console_check 'disk mount 1' 'FAT32 mounted\.'
-    console_check 'disk ls' 'HOST\.TXT'
-    console_check 'disk cat host.txt' $'\r?\nHost seeded\r?\n'
-    console_check 'disk ls' 'LONGFI~1\.TXT'
-    console_check 'disk cat LONGFI~1.TXT' $'\r?\nAlias data\r?\n'
-    console_check 'disk cat empty.txt' $'disk cat empty\\.txt\r?\n'
-    console_check 'disk cat missing.txt' 'Disk file not found\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'ls /disk' 'Directory not found\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'disk mount 1' 'Usage: disk info'
+    console_check 'disk unmount' 'Usage: disk info'
+    console_check 'disk ls' 'Usage: disk info'
+    console_check 'disk cat host.txt' 'Usage: disk info'
+    console_check 'disk put msg host.txt' 'Usage: disk info'
+    console_check 'ls /disk' 'HOST\.TXT'
+    console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
+    console_check 'ls /disk' 'LONGFI~1\.TXT'
+    console_check 'cat /disk/LONGFI~1.TXT' $'\r?\nAlias data\r?\n'
+    console_check 'cat /disk/empty.txt' $'cat /disk/empty\\.txt\r?\n'
+    console_check 'cat /disk/missing.txt' 'Disk file not found\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_write() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
-    console_check 'disk put long.txt save.txt' 'Disk file saved\.'
-    console_check 'disk cat save.txt' $'\r?\nFirst line\r?\n'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'cp /ram/long.txt /disk/save.txt' 'Disk file saved\.'
+    console_check 'cat /disk/save.txt' $'\r?\nFirst line\r?\n'
+    console_check 'cp /disk/save.txt /disk/copy.txt' 'Disk file saved\.'
+    console_check 'cp /disk/copy.txt /ram/readback.txt' 'cp /disk/copy\.txt'
+    console_check 'cp /ram/readback.txt /ram/second.txt' 'cp /ram/readback\.txt'
+    console_check 'crc32 second.txt' "$long_crc"$'\r?\n'
+    console_check 'cp /disk/COPY.TXT /disk/copy.txt' 'Source and destination are the same file\.'
+    console_check 'cp /ram/readback.txt /ram/readback.txt' 'Source and destination are the same file\.'
     console_check 'echo Replacement > /ram/msg' 'echo Replacement'
-    console_check 'disk put msg save.txt' 'Disk file saved\.'
-    console_check 'disk put empty.txt empty.txt' 'Disk file saved\.'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'cp /ram/msg /disk/save.txt' 'Disk file saved\.'
+    console_check 'cp /ram/empty.txt /disk/empty.txt' 'Disk file saved\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
     console_check 'reboot' 'Rebooting'
-    console_check 'disk mount 1' 'FAT32 mounted\.'
-    console_check 'disk cat save.txt' $'\r?\nReplacement\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'cat /disk/save.txt' $'\r?\nReplacement\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_orphans() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'disk check' $'Orphaned FAT32 clusters: 2\r?\n'
-    console_check 'disk cat host.txt' $'\r?\nHost seeded\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_repair() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'disk repair' $'Reclaimed FAT32 clusters: 2\r?\n'
     console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
     console_check 'disk repair' $'Reclaimed FAT32 clusters: 0\r?\n'
-    console_check 'disk cat host.txt' $'\r?\nHost seeded\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_repair_refusal() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'disk check' "$repair_error"
     console_check 'disk repair' "$repair_error"
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_ownership_refusal() {
     local error='FAT32 check failed: cluster ownership could not be verified\.'
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo Replacement > /ram/msg' 'echo Replacement'
-    console_check 'disk put msg host.txt' "$error"
+    console_check 'cp /ram/msg /disk/host.txt' "$error"
     console_check "echo Fresh > $create_target" "$error"
     console_check 'disk check' "$error"
     console_check 'disk repair' "$error"
-    console_check 'disk cat host.txt' $'\r?\nHost seeded\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'cat /disk/host.txt' $'\r?\nHost seeded\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_mirror_refusal() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo Fresh > /disk/new.txt' 'FAT32 check failed: FAT copies disagree\.'
     console_check 'echo Replacement > /ram/msg' 'echo Replacement'
-    console_check 'disk put msg host.txt' "$replacement_error"
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'cp /ram/msg /disk/host.txt' "$replacement_error"
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_replace() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo Replacement > /ram/msg' 'echo Replacement'
-    console_check 'disk put msg host.txt' 'Disk file saved\.'
-    console_check 'disk cat host.txt' $'\r?\nReplacement\r?\n'
-    console_check 'disk put msg lower.txt' 'Disk file saved\.'
+    console_check 'cp /ram/msg /disk/host.txt' 'Disk file saved\.'
+    console_check 'cat /disk/host.txt' $'\r?\nReplacement\r?\n'
+    console_check 'cp /ram/msg /disk/lower.txt' 'Disk file saved\.'
     console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 check_fat_create_with_bad_mirror() {
     expect_serial 'baremetal> '
-    console_check 'disk mount 1' 'FAT32 mounted\.'
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
     console_check 'echo New file > /ram/msg' 'echo New file'
-    console_check 'disk put msg new.txt' 'Disk file saved\.'
-    console_check 'disk cat new.txt' $'\r?\nNew file\r?\n'
-    console_check 'disk unmount' 'FAT32 unmounted\.'
+    console_check 'cp /ram/msg /disk/new.txt' 'Disk file saved\.'
+    console_check 'cat /disk/new.txt' $'\r?\nNew file\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
 # The fixtures below place their short entries in the first sector of
@@ -328,6 +339,7 @@ if [[ $slice == all || $slice == fat32 ]]; then
         "$files/cycle.raw" check_fat_ownership_refusal
 
     printf 'First line\n%0600d\n' 1 > "$files/long.txt"
+    long_crc=$(gzip -n < "$files/long.txt" | tail -c 8 | od -An -N4 -t x4 | tr -d ' \n' | tr 'a-f' 'A-F')
     tar --format=ustar -C "$files" -cf "$files/ramfs.tar" long.txt empty.txt
 
     run_vfs_fixtures
@@ -341,6 +353,7 @@ if [[ $slice == all || $slice == fat32 ]]; then
     qemu-img convert -f qcow2 -O raw "$files/disk.qcow2" "$files/readback.raw"
     for image in "$files/disk.raw" "$files/readback.raw"; do
         mtype -i "$image@@1048576" ::SAVE.TXT | cmp - <(printf 'Replacement\n')
+        mtype -i "$image@@1048576" ::COPY.TXT | cmp - "$files/long.txt"
         mtype -i "$image@@1048576" ::HOST.TXT | cmp - "$files/host.txt"
         mtype -i "$image@@1048576" ::EMPTY.TXT | cmp - /dev/null
         dd if="$image" of="$files/check-volume" bs=1M skip=1 count=64 status=none

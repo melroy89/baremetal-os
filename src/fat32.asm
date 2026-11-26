@@ -19,8 +19,6 @@ extern block_flush
 extern gpt_load
 extern gpt_partition
 extern parse_lba
-extern ramfs_lookup
-extern ramfs_not_found
 extern console_write
 extern console_write_cstr
 extern console_putc
@@ -29,10 +27,10 @@ section .text
 global fat_mount
 global fat_list
 global fat_cat
-global fat_put
 global fat_unmount
 global fat_write
 global fat_touch
+global fat_copy_open, fat_copy_chunk, fat_copy_write
 global fat_rm
 global fat_find_dir
 global fat_validate_root
@@ -658,79 +656,22 @@ bad_volume_sector:
     lea     rax, [rel unsupported_volume]
     ret
 
-fat_put:
-    cmp     byte [rbp + fat_volume.mounted], 0
-    je      print_unmounted
-    cmp     byte [rbp + fat_volume.write_error], 0
-    jne     print_write_blocked
-    push    rbx
-    push    r12
-    sub     rsp, 8
-    mov     rbx, rdi
-    xor     r12d, r12d
-.find_separator:
-    mov     al, [rdi]
-    test    al, al
-    jz      .separator
-    cmp     al, ' '
-    cmove   r12, rdi
-    inc     rdi
-    jmp     .find_separator
-.separator:
-    test    r12, r12
-    jz      .usage
-    lea     rdi, [r12 + 1]
-    call    short_name
-    jc      .name
-    lea     r12, [r12 + 1]
-    lea     rdi, [r12 - 1]
-.trim_source:
-    cmp     rdi, rbx
-    je      .usage
-    cmp     byte [rdi - 1], ' '
-    jne     .source
-    dec     rdi
-    jmp     .trim_source
-.source:
-    mov     byte [rdi], 0
-    mov     rdi, rbx
-    call    ramfs_lookup
-    test    rax, rax
-    jz      .missing
-    mov     rdi, r12
-    mov     rsi, rax
-    xor     ecx, ecx
-    add     rsp, 8
-    pop     r12
-    pop     rbx
-    jmp     fat_write
-.usage:
-    lea     rax, [rel put_usage]
-    jmp     .error
-.name:
-    lea     rax, [rel invalid_name]
-    jmp     .error
-.missing:
-    add     rsp, 8
-    pop     r12
-    pop     rbx
-    jmp     ramfs_not_found
-.error:
-    add     rsp, 8
-    pop     r12
-    pop     rbx
-    jmp     print_error
-
 ; rdi = name, esi = parent cluster. Create an empty file only on a miss.
 fat_touch:
     mov     ecx, esi
     xor     esi, esi
     xor     edx, edx
     mov     r8d, 1
+    xor     r9d, r9d
     jmp     fat_store
 
 ; rdi = name, rsi = bytes, rdx = count, ecx = parent cluster (zero for root).
 fat_write:
+    xor     r9d, r9d
+    jmp     fat_write_mode
+fat_copy_write:
+    mov     r9d, 1
+fat_write_mode:
     xor     r8d, r8d
 fat_store:
     cmp     byte [rbp + fat_volume.write_error], 0
@@ -742,6 +683,7 @@ fat_store:
     push    r15
     sub     rsp, 16
     mov     [rsp], r8d                ; Create only, with no success message.
+    mov     [rsp + 4], r9d            ; Read from an open FAT32 source.
     cmp     rdx, 0x7FFFFFFF
     ja      .large
     mov     r12, rsi
@@ -765,6 +707,17 @@ fat_store:
     je      .verify
     cmp     dword [rsp], 0
     jne     .touch_existing
+    cmp     dword [rsp + 4], 0
+    je      .verify_slot
+    cmp     rbp, [rel copy_volume]
+    jne     .verify_slot
+    mov     rax, [rel slot_lba]
+    cmp     rax, [rel copy_entry_lba]
+    jne     .verify_slot
+    mov     eax, [rel slot_offset]
+    cmp     eax, [rel copy_entry_offset]
+    je      .same_file
+.verify_slot:
     call    verify_file_slot
     test    rax, rax
     jnz     .error
@@ -814,6 +767,20 @@ fat_store:
     mov     ebx, [rbp + fat_volume.sectors_per_cluster]
 .sector:
     lea     rdi, [rel sector_buffer]
+    cmp     dword [rsp + 4], 0
+    je      .from_memory
+    test    r13d, r13d
+    jz      .pad
+    call    fat_copy_chunk
+    test    rax, rax
+    jnz     .source_error
+    lea     rdi, [rel sector_buffer]
+    mov     edx, BLOCK_SIZE
+    cmp     r13d, edx
+    cmovb   edx, r13d
+    add     rdi, rdx
+    jmp     .consume
+.from_memory:
     mov     rsi, r12
     mov     ecx, BLOCK_SIZE
     cmp     r13d, ecx
@@ -821,6 +788,10 @@ fat_store:
     mov     edx, ecx
     rep     movsb
     add     r12, rdx
+    jmp     .consume
+.pad:
+    xor     edx, edx
+.consume:
     sub     r13d, edx
     mov     ecx, BLOCK_SIZE
     sub     ecx, edx
@@ -913,6 +884,9 @@ fat_store:
     jmp     .print
 
 .no_space:
+    lea     rax, [rel volume_full]
+.source_error:
+    mov     r12, rax
     mov     edi, [rel new_head]
     call    free_chain
     test    rax, rax
@@ -921,7 +895,10 @@ fat_store:
     test    rax, rax
     jnz     .write_error
     mov     byte [rbp + fat_volume.pending_write], 0
-    lea     rax, [rel volume_full]
+    mov     rax, r12
+    jmp     .error
+.same_file:
+    lea     rax, [rel same_copy_file]
     jmp     .error
 .write_error:
     mov     byte [rbp + fat_volume.write_error], 1
@@ -1435,13 +1412,19 @@ duplicate_name:     db "Duplicate FAT32 short name.", 10, 0
 lfn_remove:         db "Cannot remove a FAT32 file with long-name entries.", 10, 0
 root_full:          db "FAT32 directory is full.", 10, 0
 volume_full:        db "FAT32 volume is full.", 10, 0
-file_large:         db "RAM file is too large for this FAT32 writer.", 10, 0
-put_usage:          db "Usage: disk put RAMFILE NAME", 10, 0
+same_copy_file:     db "Source and destination are the same file.", 10, 0
+file_large:         db "File is too large for this FAT32 writer.", 10, 0
 saved_text:         db "Disk file saved.", 10, 0
 blocked_text:       db "FAT32 writes stopped after an I/O error.", 10, 0
 
 section .bss
 alignb 8
+copy_volume:          resq 1
+copy_entry_lba:       resq 1
+copy_next_sector:     resq 1
+copy_entry_offset:    resd 1
+copy_cluster:         resd 1
+copy_sectors_left:    resd 1
 slot_lba:             resq 1
 slot_offset:         resd 1
 slot_dir_cluster:    resd 1
@@ -1464,3 +1447,4 @@ fat_sector_pair:      resb 2 * BLOCK_SIZE
 sector_buffer:       resb BLOCK_SIZE
 
 %include "fat32_check.inc"
+%include "fat32_copy.inc"
