@@ -1,5 +1,7 @@
 # Bare Metal OS
 
+[![Boot smoke tests](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml/badge.svg)](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml)
+
 A small standalone operating system written in x86-64 assembly (NASM). At startup, a Multiboot 1 bootloader hands control to the kernel in 32-bit mode. The kernel switches the CPU to 64-bit mode and opens a text console you can use with a screen and keyboard or through a serial terminal.
 
 ![Bare Metal OS running in QEMU/KVM, showing the memory map and output from the version, help, and cpu commands](assets/baremetal-os.png)
