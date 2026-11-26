@@ -2,6 +2,8 @@
 
 Type `help` at the `baremetal>` prompt for the full command list.
 
+At the VGA prompt, use **Page Up** and **Page Down** to browse up to 256 previous rows. Typing returns to the live screen, and `clear` discards the VGA history. On serial, use the host terminal's scrollback.
+
 ## System and session
 
 | Command                | Action                                                        |

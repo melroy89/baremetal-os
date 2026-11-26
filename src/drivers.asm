@@ -15,6 +15,11 @@ default rel
 %include "os_constants.inc"
 
 %define VGA_TEXT_CELLS  (0x8000 / 2)
+%define VGA_ROW_BYTES   (VGA_COLS * 2)
+%define VGA_HISTORY_ROWS 256
+%define VGA_RING_BYTES  ((VGA_HISTORY_ROWS + VGA_ROWS) * VGA_ROW_BYTES)
+%define KEY_PAGE_UP     0x100
+%define KEY_PAGE_DOWN   0x101
 
 section .text
 
@@ -156,10 +161,17 @@ serial_try_getc:
 
 ; void vga_clear(uint8 attr in dil)
 vga_clear:
+    push    rdi
+    call    vga_resume
+    pop     rdi
     mov     [rel vga_attr], dil
     mov     dword [rel vga_row], 0
     mov     dword [rel vga_col], 0
     mov     dword [rel vga_start_cell], 0
+    mov     dword [rel vga_write_cell], 0
+    mov     dword [rel vga_history_count], 0
+    lea     rax, [rel vga_ring]
+    mov     [rel vga_ram_row], rax
     mov     dword [rel utf8_rem], 0
     mov     dword [rel utf8_cp], 0
 
@@ -170,6 +182,9 @@ vga_clear:
     shl     eax, 16
     or      eax, edx                    ; 2 cells in eax
     mov     rdi, VGA_MEM
+    mov     ecx, (VGA_COLS * VGA_ROWS) / 2
+    rep     stosd
+    lea     rdi, [rel vga_ring]
     mov     ecx, (VGA_COLS * VGA_ROWS) / 2
     rep     stosd
     sub     rsp, 8
@@ -223,6 +238,7 @@ vga_update_cursor:
 ; Internal: set the CRTC start address in text cells.
 vga_update_start:
     mov     ecx, [rel vga_start_cell]
+vga_set_start:
     mov     dx, VGA_CRTC_IDX
     mov     al, 0x0D
     out     dx, al
@@ -259,6 +275,12 @@ vga_scroll:
 
 .clear_row:
     mov     [rel vga_start_cell], eax
+    add     eax, (VGA_ROWS - 1) * VGA_COLS
+    mov     [rel vga_write_cell], eax
+    cmp     dword [rel vga_history_count], VGA_HISTORY_ROWS
+    jae     .fill
+    inc     dword [rel vga_history_count]
+.fill:
     ; Clear bottom row with current attribute
     movzx   eax, byte [rel vga_attr]
     shl     eax, 8
@@ -266,6 +288,9 @@ vga_scroll:
     mov     edx, eax
     shl     eax, 16
     or      eax, edx
+    mov     ecx, VGA_COLS / 2
+    rep     stosd
+    mov     rdi, [rel vga_ram_row]
     mov     ecx, VGA_COLS / 2
     rep     stosd
     mov     dword [rel vga_row], VGA_ROWS - 1
@@ -292,23 +317,23 @@ vga_emit_ascii:
     cmp     al, 0x7E
     ja      .ret
 
-    mov     ecx, [rel vga_row]
-    imul    ecx, ecx, VGA_COLS
-    add     ecx, [rel vga_col]
-    add     ecx, [rel vga_start_cell]
+    mov     edi, [rel vga_col]
     mov     ah, [rel vga_attr]
-    mov     rdx, VGA_MEM
+    mov     ecx, [rel vga_write_cell]
+    add     ecx, edi
+    mov     edx, VGA_MEM
     mov     [rdx + rcx*2], ax
+    mov     rdx, [rel vga_ram_row]
+    mov     [rdx + rdi*2], ax
 
-    mov     eax, [rel vga_col]
-    inc     eax
-    cmp     eax, VGA_COLS
+    inc     edi
+    cmp     edi, VGA_COLS
     jb      .store_col
     xor     eax, eax
     mov     [rel vga_col], eax
     jmp     .advance_row
 .store_col:
-    mov     [rel vga_col], eax
+    mov     [rel vga_col], edi
     ret
 
 .cr:
@@ -316,18 +341,17 @@ vga_emit_ascii:
     ret
 
 .bs:
-    mov     eax, [rel vga_col]
-    test    eax, eax
+    mov     ecx, [rel vga_col]
+    test    ecx, ecx
     jz      .ret
-    dec     eax
-    mov     [rel vga_col], eax
-    mov     ecx, [rel vga_row]
-    imul    ecx, ecx, VGA_COLS
-    add     ecx, eax
-    add     ecx, [rel vga_start_cell]
+    dec     ecx
+    mov     [rel vga_col], ecx
     mov     ah, [rel vga_attr]
     mov     al, ' '
-    mov     rdx, VGA_MEM
+    mov     edx, [rel vga_write_cell]
+    add     edx, ecx
+    mov     [VGA_MEM + rdx*2], ax
+    mov     rdx, [rel vga_ram_row]
     mov     [rdx + rcx*2], ax
     ret
 
@@ -342,6 +366,13 @@ vga_emit_ascii:
 .newline:
     mov     dword [rel vga_col], 0
 .advance_row:
+    mov     rdx, [rel vga_ram_row]
+    add     rdx, VGA_ROW_BYTES
+    lea     rcx, [rel vga_ring + VGA_RING_BYTES]
+    lea     rax, [rel vga_ring]
+    cmp     rdx, rcx
+    cmove   rdx, rax
+    mov     [rel vga_ram_row], rdx
     mov     eax, [rel vga_row]
     inc     eax
     cmp     eax, VGA_ROWS
@@ -349,7 +380,85 @@ vga_emit_ascii:
     jmp     vga_scroll
 .store_row:
     mov     [rel vga_row], eax
+    add     dword [rel vga_write_cell], VGA_COLS
 .ret:
+    ret
+
+; edi = signed number of rows to move back. A zero offset is the live screen.
+vga_page:
+    mov     eax, [rel vga_view_offset]
+    add     edi, eax
+    xor     edx, edx
+    test    edi, edi
+    cmovs   edi, edx
+    cmp     edi, [rel vga_history_count]
+    cmova   edi, [rel vga_history_count]
+    cmp     edi, eax
+    je      .done
+    test    edi, edi
+    jz      vga_resume
+    mov     [rel vga_view_offset], edi
+    sub     rsp, 8
+    test    eax, eax
+    jnz     .render
+    mov     dx, VGA_CRTC_IDX
+    mov     al, 0x0A                    ; Cursor start and disable bit
+    out     dx, al
+    mov     dx, VGA_CRTC_DATA
+    in      al, dx
+    mov     [rel vga_cursor_start], al
+    or      al, 0x20
+    out     dx, al
+.render:
+    xor     ecx, ecx
+    call    vga_render
+    xor     ecx, ecx
+    add     rsp, 8
+    jmp     vga_set_start
+.done:
+    ret
+
+vga_resume:
+    cmp     dword [rel vga_view_offset], 0
+    je      .done
+    mov     dword [rel vga_view_offset], 0
+    xor     edi, edi
+    mov     ecx, [rel vga_start_cell]
+    sub     rsp, 8
+    call    vga_render
+    call    vga_update_start
+    call    vga_update_cursor
+    mov     dx, VGA_CRTC_IDX
+    mov     al, 0x0A
+    out     dx, al
+    mov     dx, VGA_CRTC_DATA
+    mov     al, [rel vga_cursor_start]
+    out     dx, al
+    add     rsp, 8
+.done:
+    ret
+
+; edi = history offset in rows, ecx = start cell in video memory.
+vga_render:
+    add     edi, [rel vga_row]
+    imul    edi, edi, VGA_ROW_BYTES
+    mov     rsi, [rel vga_ram_row]
+    sub     rsi, rdi
+    lea     r8, [rel vga_ring]
+    lea     r9, [rel vga_ring + VGA_RING_BYTES]
+    cmp     rsi, r8
+    jae     .start
+    add     rsi, VGA_RING_BYTES
+.start:
+    lea     rdi, [VGA_MEM + rcx*2]
+    mov     edx, VGA_ROWS
+.row:
+    mov     ecx, VGA_ROW_BYTES / 4
+    rep     movsd
+    cmp     rsi, r9
+    cmove   rsi, r8
+    dec     edx
+    jnz     .row
     ret
 
 ; void vga_putc_utf8(uint8 byte in dil)
@@ -520,7 +629,7 @@ console_write_cstr:
 ; 3. PS/2 Keyboard Driver (0x60 / 0x64 polling, Scancode Set 1 -> ASCII)
 ; ============================================================================
 
-; int32 ps2_try_getc(void) -> eax = ASCII (0..127) or -1 if no key
+; Return ASCII, a KEY_PAGE_* event, or -1 if there is no key to deliver.
 ps2_try_getc:
     in      al, PS2_STATUS
     test    al, 0x01                    ; Output buffer full?
@@ -531,11 +640,15 @@ ps2_try_getc:
     xor     eax, eax
     in      al, PS2_DATA
 
-    ; Ignore 0xE0 / 0xE1 extended prefix
+    ; Consume the remaining bytes of the Pause key sequence.
+    cmp     byte [rel ps2_pause_bytes], 0
+    jne     .pause_byte
     cmp     al, 0xE0
-    je      .none
+    je      .prefix
     cmp     al, 0xE1
-    je      .none
+    je      .pause
+    cmp     byte [rel ps2_extended], 0
+    jne     .extended
 
     ; Track Left/Right Shift make & break
     cmp     al, 0x2A                    ; LShift make
@@ -552,6 +665,7 @@ ps2_try_getc:
     jnz     .none
 
     ; Translate scancode -> ASCII
+.translate:
     cmp     byte [rel ps2_shift], 0
     jne     .use_shift
     lea     rdx, [rel ps2_tbl_norm]
@@ -570,6 +684,33 @@ ps2_try_getc:
 .shift_off:
     mov     byte [rel ps2_shift], 0
     jmp     .none
+.prefix:
+    mov     byte [rel ps2_extended], 1
+    jmp     .none
+.pause:
+    mov     byte [rel ps2_extended], 0
+    mov     byte [rel ps2_pause_bytes], 5
+    jmp     .none
+.pause_byte:
+    dec     byte [rel ps2_pause_bytes]
+    jmp     .none
+.extended:
+    mov     byte [rel ps2_extended], 0
+    cmp     al, 0x49
+    je      .page_up
+    cmp     al, 0x51
+    je      .page_down
+    cmp     al, 0x1C                    ; Keypad Enter
+    je      .translate
+    cmp     al, 0x35                    ; Keypad Divide
+    je      .translate
+    jmp     .none
+.page_up:
+    mov     eax, KEY_PAGE_UP
+    ret
+.page_down:
+    mov     eax, KEY_PAGE_DOWN
+    ret
 .drain_none:
     in      al, PS2_DATA
 .none:
@@ -647,6 +788,10 @@ console_readline:
     jmp     .poll
 
 .got_char:
+    cmp     eax, KEY_PAGE_UP
+    je      .page_up
+    cmp     eax, KEY_PAGE_DOWN
+    je      .page_down
     ; Ignore trailing '\n' right after '\r'
     cmp     eax, 10
     jne     .not_lf_after_cr
@@ -661,7 +806,7 @@ console_readline:
     cmp     eax, 13                     ; '\r'
     je      .got_cr
     cmp     rbx, LINE_TOO_LONG
-    je      .poll
+    je      .discard_overlong
     cmp     eax, 4                      ; Ctrl-D (EOF)
     je      .got_eof
     cmp     eax, 8                      ; Backspace
@@ -677,16 +822,28 @@ console_readline:
 
     mov     [r12 + rbx], al
     inc     rbx
-    mov     edi, eax
+    call    vga_resume
+    movzx   edi, byte [r12 + rbx - 1]
     call    console_putc
     jmp     .poll
 
 .overflow:
+    call    vga_resume
     mov     rbx, LINE_TOO_LONG
     mov     byte [r12], 0
     jmp     .poll
 
+.discard_overlong:
+    cmp     eax, 8                      ; Backspace still returns to the live view.
+    je      .resume_discard
+    cmp     eax, 0x20                   ; Text bytes and serial DEL.
+    jb      .poll
+.resume_discard:
+    call    vga_resume
+    jmp     .poll
+
 .got_bs:
+    call    vga_resume
     test    rbx, rbx
     jz      .poll
     dec     rbx
@@ -705,6 +862,7 @@ console_readline:
 .got_cr:
     mov     byte [rel last_was_cr], 1
 .enter:
+    call    vga_resume
     cmp     rbx, LINE_TOO_LONG
     je      .newline
     mov     byte [r12 + rbx], 0
@@ -715,6 +873,7 @@ console_readline:
     jmp     .return
 
 .got_eof:
+    call    vga_resume
     mov     byte [r12 + rbx], 0
     mov     rax, -1
 .return:
@@ -722,6 +881,14 @@ console_readline:
     pop     r12
     pop     rbx
     ret
+.page_up:
+    mov     edi, VGA_ROWS
+    jmp     .page
+.page_down:
+    mov     edi, -VGA_ROWS
+.page:
+    call    vga_page
+    jmp     .poll
 
 ; ============================================================================
 ; 4. PIT Channel 2 Delay & RDTSC Calibrated Nanosecond Timer
@@ -919,8 +1086,17 @@ g_tsc_mhz:      resq 1
 vga_row:        resd 1
 vga_col:        resd 1
 vga_start_cell: resd 1
+vga_write_cell: resd 1               ; First VGA cell of the current output row
+vga_history_count: resd 1
+vga_view_offset: resd 1
 utf8_cp:        resd 1
 utf8_rem:       resd 1
 vga_attr:       resb 1
+vga_cursor_start: resb 1
 ps2_shift:      resb 1
+ps2_extended:   resb 1
+ps2_pause_bytes: resb 1
 last_was_cr:    resb 1
+alignb 8
+vga_ram_row:    resq 1
+vga_ring:       resb VGA_RING_BYTES
