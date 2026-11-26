@@ -46,109 +46,27 @@ qemu-system-x86_64 -m 64M -nic none -cdrom baremetal-os.iso \
 
 For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/share/ovmf/OVMF.fd`. The firmware path may vary by distribution.
 
-## Console
+## Console quick reference
 
-| Command    | Action                                                           |
-| ---------- | ---------------------------------------------------------------- |
-| `help`     | List commands                                                    |
-| `info`     | Show CPUs started, secondary stack pages, and usable RAM         |
-| `cpu`      | Show the boot CPU vendor, model, and capabilities                |
-| `cpu ping` | Check which online secondary CPUs respond                        |
-| `mem`      | Show how many 4 KiB pages the kernel manages, uses, and has free |
-| `memmap`   | Show the memory ranges and types reported by Multiboot           |
-| `lspci`    | List PCI addresses, vendor and device IDs, and classes           |
-| `ls`       | List files in the RAM filesystem                                 |
-| `cat FILE` | Print a file from the RAM filesystem                             |
-| `crc32 FILE` | Show a RAM file's CRC-32 checksum                             |
-| `echo`     | Print text or write it to a RAM file with `> FILE`               |
-| `rm FILE`  | Remove a writable RAM file                                       |
-| `uptime`   | Show time since boot in milliseconds                             |
-| `log`      | Replay milestones from the current boot                          |
-| `version`  | Show the kernel version and source build identifier              |
-| `clear`    | Clear VGA and ANSI-compatible serial terminals                   |
-| `reboot`   | Restart the QEMU guest                                           |
-| `halt`     | Power off the machine                                            |
+At the `baremetal>` prompt, start with `help`.
 
-`cpu ping` sends an interrupt to each online secondary CPU and reports its reply or timeout. Run it again to retry after a timeout. In a four-vCPU guest, expect three replies. A one-vCPU guest has no secondary CPUs to ping.
+| Command                    | Action                                             |
+| -------------------------- | -------------------------------------------------- |
+| `help`                     | List console commands.                             |
+| `info`, `cpu`, `mem`       | Inspect the guest, CPU, and memory.                |
+| `lspci`                    | List PCI devices.                                  |
+| `disk info`                | Inspect the attached IDE disk.                     |
+| `net info`                 | Show the Ethernet adapter and link state.          |
+| `ls`                       | List RAM files.                                    |
+| `uptime`, `log`, `version` | Check runtime, boot milestones, and build details. |
+| `reboot`, `halt`           | Restart or power off the guest.                    |
 
-`crc32 FILE` prints the standard CRC-32 checksum of the file's bytes as eight hexadecimal digits. It uses a secondary CPU when one is ready, with the boot CPU as a fallback.
+## Documentation
 
-`lspci` shows each device's `bus:device.function` address, vendor and device IDs, and a six-digit class code. The class code contains the class, subclass, and programming interface. The command reads PCI segment 0 through the legacy x86 configuration ports.
-
-Use `lspci --all` when a VM exposes a device at a higher function number without function 0. This slower scan probes every function.
-
-## Run with libvirt
-
-Use `virt-install` and `virsh` to manage a QEMU/KVM guest from the terminal. Virtual Machine Manager (`virt-manager`) is an optional graphical interface for the same libvirt guest.
-
-### Create the guest
-
-With `virt-install`, access to `qemu:///system`, and an active file-based libvirt pool named `default`, run these commands from the directory containing `baremetal-os.elf`. They store the ELF in the pool and start a KVM guest with one vCPU, 64 MiB of RAM, and direct kernel boot.
-
-```sh
-virsh -c qemu:///system vol-create-as default baremetal-os-kernel.elf \
-  "$(stat -c %s baremetal-os.elf)" --format raw
-virsh -c qemu:///system vol-upload --pool default baremetal-os-kernel.elf baremetal-os.elf
-kernel_path=$(virsh -c qemu:///system vol-path --pool default baremetal-os-kernel.elf)
-virt-install --connect qemu:///system --name baremetal-os --import \
-  --virt-type kvm --machine pc --memory 64 --vcpus 1 --cpu host-passthrough \
-  --osinfo generic --disk none --network none --memballoon model=none \
-  --graphics spice,listen=none --video vga --serial pty \
-  --boot "kernel=$kernel_path" --noautoconsole
-```
-
-Connect to the running guest's serial console with `virsh -c qemu:///system console baremetal-os`. Press Enter to show the prompt and `Ctrl+]` to detach. To start a powered-off guest and connect in one step, run `virsh -c qemu:///system start baremetal-os --console`.
-
-For the graphical console, open **baremetal-os** under the **QEMU/KVM** system connection in Virtual Machine Manager. Enter `halt` at the `baremetal>` prompt to power off from either console.
-
-### Update the kernel
-
-Power off the existing guest before uploading a newer `baremetal-os.elf` to its volume.
-
-```sh
-virsh -c qemu:///system vol-upload --pool default baremetal-os-kernel.elf baremetal-os.elf
-```
-
-## Boot the ISO in Proxmox VE
-
-1. Upload `baremetal-os.iso` to storage that accepts **ISO Images**.
-2. Create a VM with one vCPU, 512 MiB of RAM, and a CD/DVD drive using the uploaded ISO. You can omit the guest hard disk and network device. Put the CD/DVD drive first in the boot order.
-3. Choose **SeaBIOS**, start the VM, and open its graphical console.
-
-For **OVMF (UEFI)**, disable Secure Boot, leave **Pre-Enroll keys** unchecked if you add an EFI disk, and add a serial port backed by a socket. Start the VM and connect from the Proxmox host with `qm terminal VMID`, replacing `VMID` with the VM's ID. [Proxmox VE VM configuration guide](https://pve.proxmox.com/pve-docs/chapter-qm.html)
-
-## Advanced features
-
-### Write files in RAM
-
-You can create a RAM file at the console without loading a boot archive.
-
-```text
-echo "This is some text"
-echo "3 > 2" > comparison.txt
-ls
-cat comparison.txt
-rm comparison.txt
-```
-
-Double quotes around the text are optional. Use them to preserve surrounding spaces or print a literal `>`. The `> FILE` redirection creates or replaces a file and adds a newline. Enter the filename without quotes and leave `>` and `"` out of the name. Each writable file takes one 4 KiB page, which `rm` returns to the kernel. Writable files disappear on reboot.
-
-### Load an optional RAM filesystem archive
-
-To start with files already available, create an uncompressed USTAR archive of regular files at the archive root. File names in RAM and in the archive can contain up to 99 printable ASCII characters, with no slashes or leading or trailing spaces. Pass the archive to QEMU as a boot module.
-
-```sh
-printf 'Hello from RAM\n' > hello.txt
-tar --format=ustar -cf ramfs.tar hello.txt
-qemu-system-x86_64 -enable-kvm -cpu host -m 64M -nic none \
-  -kernel baremetal-os.elf -initrd ramfs.tar -display none -serial stdio -monitor none
-```
-
-At the prompt, try `ls` and `cat hello.txt`. Archive files are read-only. Writing to an archive filename creates a writable copy that takes precedence. Removing the copy makes the original visible again.
-
-The kernel indexes the archive at boot so `ls` and `cat` can find files quickly. The archive and its index share guest RAM. If the kernel reports that the index ran out of free pages, boot with more RAM. If an archive repeats a filename, `cat` reads the last entry and `ls` lists the filename once.
-
-When building from source, use `make os-run INITRAMFS=ramfs.tar` for the same setup. In a custom GRUB image, load the archive as the first boot module with `module /boot/ramfs.tar` after the `multiboot` command.
+- [Console commands and RAM files](docs/console.md)
+- [IDE storage, GPT, and FAT32](docs/storage.md)
+- [Ethernet setup and frame commands](docs/networking.md)
+- [Run with libvirt or Proxmox VE](docs/virtualization.md)
 
 ---
 
@@ -174,10 +92,12 @@ make os-iso
 
 The image is `build/baremetal-os.iso`. If you added a GRUB platform after building it, run `make -B os-iso` to rebuild it. To use the ELF or ISO with the run instructions above, run them from the `build/` directory.
 
+Run `make test-ata test-gpt test-fat32 test-network` for the device tests. They use QEMU, `qemu-img`, `sgdisk`, `dosfstools`, `mtools`, and `socat`.
+
 ### Kernel overview
 
-The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between keyboard and serial interrupts. There is currently no user space, disk filesystem, or networking stack.
+The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between keyboard and serial interrupts. Storage and Ethernet use polled I/O when requested by a console command.
 
 ## Credits
 
-The bootstrap and hardware drivers are derived from Alexey Fateev's MIT-licensed project. [Upstream source](https://github.com/alesha-pro/llm.asm)
+Bootstrap and drivers adapted from Alexey Fateev's [llm.asm (MIT)](https://github.com/alesha-pro/llm.asm).
