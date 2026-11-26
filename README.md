@@ -20,7 +20,7 @@ Run these commands from the directory containing the downloaded file.
 
 ### Run directly with QEMU/KVM
 
-This option runs entirely in your terminal and needs QEMU and access to `/dev/kvm`.
+For a quick boot in QEMU/KVM, load the kernel ELF directly with `-kernel`.
 
 ```sh
 sudo apt install qemu-system-x86
@@ -32,7 +32,7 @@ This starts one vCPU with 64 MiB of RAM. Use `-smp 4` for four virtual CPUs.
 
 ### Boot the ISO
 
-Attach `baremetal-os.iso` as a CD/DVD image and boot from it.
+Alternatively, attach `baremetal-os.iso` as a CD/DVD image and boot from it.
 
 - **SeaBIOS** is the choice for a graphical first boot. With 64 MiB of RAM, the prompt appears on both VGA and serial.
 - **UEFI (OVMF)** requires the serial console. Select x86-64 UEFI firmware with Secure Boot disabled, allocate 128 MiB of RAM, and open the VM's serial console. OVMF can report `no suitable video mode found` on the graphical display while the kernel runs on serial.
