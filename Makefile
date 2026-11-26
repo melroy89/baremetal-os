@@ -5,9 +5,9 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o drivers.o echo.o kernel.o pages.o ramfs.o runtime.o smp.o)
+OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o crc32.o drivers.o echo.o kernel.o pages.o ramfs.o runtime.o smp.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
-SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf)
+SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
 RAM     ?= 64M
 SMP     ?= 1
 INITRAMFS ?=
@@ -57,6 +57,7 @@ $(BUILD)/smp-fixture-%.o: tests/smp_boot_fixture.asm src/os_constants.inc | $(BU
 $(BUILD)/smp-fixture-missing_map.elf64 $(BUILD)/smp-fixture-one_page.elf64: SMP_WRAPPERS := --wrap=smp_init
 $(BUILD)/smp-fixture-delayed_ap.elf64: SMP_WRAPPERS := --wrap=pit_delay_us --wrap=console_readline --wrap=smp_ping_irq --wrap=apic_send_ipi
 $(BUILD)/smp-fixture-lost_ping.elf64: SMP_WRAPPERS := --wrap=apic_send_ipi
+$(BUILD)/smp-fixture-crc32_work.elf64: SMP_WRAPPERS := --wrap=apic_send_ipi --wrap=console_readline --wrap=crc32_buffer
 
 $(BUILD)/smp-fixture-%.elf64: $(BUILD)/smp-fixture-%.o $(OBJECTS) src/linker.ld
 	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \

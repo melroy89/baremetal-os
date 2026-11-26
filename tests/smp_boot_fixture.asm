@@ -140,6 +140,82 @@ section .bss
 ping_attempts: resb 1
 dropped_drain: resb 1
 
+%elifdef TEST_crc32_work
+extern __real_apic_send_ipi
+extern __real_console_readline
+extern __real_crc32_buffer
+global __wrap_apic_send_ipi
+global __wrap_console_readline
+global __wrap_crc32_buffer
+
+section .text
+__wrap_apic_send_ipi:
+    cmp     esi, APIC_CRC_VECTOR
+    jne     .send
+    inc     dword [rel crc_sends]
+    cmp     dword [rel crc_sends], 2
+    jne     .send
+    ; Lose the second work interrupt without reporting a send failure.
+    xor     eax, eax
+    ret
+.send:
+    jmp     __real_apic_send_ipi
+
+__wrap_console_readline:
+    push    rdi
+    call    __real_console_readline
+    pop     rdi
+    cmp     rax, 6
+    jne     .done
+    cmp     dword [rdi], 'crc-'
+    jne     .done
+    cmp     word [rdi + 4], 'go'
+    jne     .done
+    mov     byte [rel crc_gate_open], 1
+    xor     eax, eax
+.done:
+    ret
+
+__wrap_crc32_buffer:
+    mov     eax, APIC_DEFAULT_BASE
+    cmp     dword [rax + APIC_REG_ID], 1 << 24
+    jne     __real_crc32_buffer
+    inc     dword [rel crc_worker_calls]
+    cmp     dword [rel crc_worker_calls], 2
+    jne     .compute
+    ; Keep the second claimed job alive past the boot CPU's timeout.
+.wait:
+    cmp     byte [rel crc_gate_open], 0
+    jne     .compute
+    pause
+    jmp     .wait
+.compute:
+    sub     rsp, 8
+    call    __real_crc32_buffer
+    add     rsp, 8
+    cmp     dword [rel crc_worker_calls], 1
+    je      .tag_worker
+    cmp     dword [rel crc_worker_calls], 2
+    jne     .verify_snapshot
+    mov     [rel crc_delayed_result], eax
+.verify_snapshot:
+    ; After the overwrite, the delayed worker must still see "123456789\n".
+    cmp     dword [rel crc_delayed_result], 0xE0117757
+    jne     .wrong_data
+.tag_worker:
+    ; Tag AP results so the serial test can distinguish a local fallback.
+    xor     eax, 1
+    ret
+.wrong_data:
+    mov     eax, 0xFFFFFFFF
+    ret
+
+section .bss
+crc_sends:          resd 1
+crc_worker_calls:   resd 1
+crc_delayed_result: resd 1
+crc_gate_open:      resb 1
+
 %else
 extern __real_smp_init
 global __wrap_smp_init

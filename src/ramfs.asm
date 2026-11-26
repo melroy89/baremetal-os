@@ -43,6 +43,8 @@ global ramfs_ls
 global ramfs_cat
 global ramfs_write
 global ramfs_rm
+global ramfs_lookup
+global ramfs_not_found
 
 ; rdi = Multiboot info. Publish the archive only after validating every entry.
 ramfs_mount:
@@ -464,6 +466,22 @@ print_filename:
 ramfs_cat:
     cmp     byte [rdi], 0
     je      .usage
+    sub     rsp, 8
+    call    ramfs_lookup
+    add     rsp, 8
+    test    rax, rax
+    jz      ramfs_not_found
+    mov     rdi, rax
+    mov     rsi, rdx
+    jmp     print_file
+.usage:
+    lea     rdi, [rel cat_usage]
+    jmp     console_write_cstr
+
+; Look up a filename in rdi, preferring the writable copy.
+; Return its data pointer in rax (zero on a miss), size in rdx,
+; and ecx = 1 if writable or 0 if archived.
+ramfs_lookup:
     push    r12
     mov     r12, rdi
     call    find_writable
@@ -471,26 +489,20 @@ ramfs_cat:
     jz      .archive
     mov     rdx, [rax + FILE_SIZE]
     add     rax, FILE_DATA
-    jmp     .print
+    mov     ecx, 1
+    jmp     .done
 .archive:
     mov     rdi, r12
     call    find_archived
+    xor     ecx, ecx
     test    rax, rax
-    jz      .missing
+    jz      .done
     mov     edx, [rax + INDEX_FILE_SIZE]
     mov     eax, [rax + INDEX_HEADER]
     add     rax, TAR_BLOCK
-.print:
+.done:
     pop     r12
-    mov     rdi, rax
-    mov     rsi, rdx
-    jmp     print_file
-.missing:
-    pop     r12
-    jmp     ramfs_not_found
-.usage:
-    lea     rdi, [rel cat_usage]
-    jmp     console_write_cstr
+    ret
 
 ; One page holds metadata and the complete output line. Replacing a file
 ; reuses its page. The boot archive stays available underneath the copy.

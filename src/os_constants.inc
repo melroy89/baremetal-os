@@ -80,6 +80,7 @@
 %define APIC_IPI_UNCERTAIN  2
 %define APIC_DRAIN_VECTOR   0x3F
 %define APIC_PING_VECTOR    0x40
+%define APIC_CRC_VECTOR     0x41
 %define APIC_SPURIOUS_VECTOR 0xFF
 
 ; --- SMP AP Trampoline physical addresses (low memory < 1 MiB) ---

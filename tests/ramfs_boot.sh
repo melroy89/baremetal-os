@@ -23,6 +23,12 @@ check_no_archive() {
     expect_serial $'ls\r?\nnote\\.txt\r?\nblank\\.txt\r?\nbaremetal> '
     printf 'cat blank.txt\r' >&"$serial_write"
     expect_serial $'cat blank\\.txt\r?\n\r?\nbaremetal> '
+    printf 'echo 123456789 > digits\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf 'crc32 digits\r' >&"$serial_write"
+    expect_serial $'\r?\nE0117757\r?\nbaremetal> '
+    printf 'rm digits\r' >&"$serial_write"
+    expect_serial 'baremetal> '
     printf 'echo "unclosed > note.txt\r' >&"$serial_write"
     expect_serial 'Usage: echo'
     expect_serial 'baremetal> '
@@ -91,10 +97,34 @@ check_archive() {
     expect_serial $'\r?\nHello from RAM\r?\nbaremetal> '
 
     printf 'help\r' >&"$serial_write"
-    for command_label in help info cpu 'cpu ping' mem memmap ls 'cat FILE' echo 'rm FILE' uptime log version clear reboot halt; do
-        printf -v padded_label '%-10s' "$command_label"
+    for command_label in help info cpu 'cpu ping' mem memmap ls 'cat FILE' 'crc32 FILE' echo 'rm FILE' uptime log version clear reboot halt; do
+        printf -v padded_label '%-11s' "$command_label"
         expect_serial $'\r?\n'"$padded_label"'[^[:space:]]'
     done
+    expect_serial 'baremetal> '
+}
+
+check_crc_archive() {
+    expect_serial 'baremetal> '
+    printf 'crc32 digits\r' >&"$serial_write"
+    expect_serial $'\r?\nCBF43926\r?\nbaremetal> '
+    printf 'crc32 binary\r' >&"$serial_write"
+    expect_serial $'\r?\nE9C0AED4\r?\nbaremetal> '
+    printf 'crc32 empty.txt\r' >&"$serial_write"
+    expect_serial $'\r?\n00000000\r?\nbaremetal> '
+    printf 'echo 123456789 > digits\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf 'crc32 digits\r' >&"$serial_write"
+    expect_serial $'\r?\nE0117757\r?\nbaremetal> '
+    printf 'rm digits\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf 'crc32 digits\r' >&"$serial_write"
+    expect_serial $'\r?\nCBF43926\r?\nbaremetal> '
+    printf 'crc32 missing\r' >&"$serial_write"
+    expect_serial 'File not found\.'
+    expect_serial 'baremetal> '
+    printf 'crc32\r' >&"$serial_write"
+    expect_serial 'Usage: crc32 FILE'
     expect_serial 'baremetal> '
 }
 
@@ -218,6 +248,9 @@ printf 'Hello from RAM\n' > "$files/root/hello.txt"
 printf 'No final newline' > "$files/root/two words.txt"
 touch "$files/root/empty.txt"
 tar --format=ustar -C "$files/root" -cf "$files/ramfs.tar" hello.txt 'two words.txt' empty.txt
+printf '123456789' > "$files/root/digits"
+printf '\000\200\377' > "$files/root/binary"
+tar --format=ustar -C "$files/root" -cf "$files/crc.tar" digits binary empty.txt
 cp "$files/ramfs.tar" "$files/duplicates.tar"
 printf 'Latest in archive\n' > "$files/root/hello.txt"
 tar --format=ustar -C "$files/root" -rf "$files/duplicates.tar" hello.txt
@@ -243,6 +276,8 @@ kernel="$build_dir/baremetal-os.elf"
 one_page="$build_dir/smp-fixture-one_page.elf"
 run_guest 'RAM filesystem without a boot archive' 1 64M check_no_archive -kernel "$kernel"
 run_guest 'RAM filesystem with a boot archive' 1 64M check_archive -kernel "$kernel" -initrd "$files/ramfs.tar"
+run_guest 'CRC-32 of archive and writable files' 4 64M check_crc_archive \
+    -kernel "$kernel" -initrd "$files/crc.tar"
 run_guest 'Overlong RAM filesystem commands' 1 64M check_overlong_commands -kernel "$kernel"
 run_guest 'RAM filesystem with duplicate archive entries' 1 64M check_duplicate_archive \
     -kernel "$kernel" -initrd "$files/duplicates.tar"

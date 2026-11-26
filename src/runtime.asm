@@ -15,6 +15,7 @@ global memory_map_walk
 global str_eq
 global write_u64
 global write_hex64_raw
+global write_hex32_raw
 
 ; Walk the Multiboot map and call the visitor for each entry.
 ; rdi = Multiboot info, rsi = visitor, rdx = visitor context.
@@ -207,9 +208,16 @@ write_u64:
 
 ; Print a fixed-width address or exception value.
 write_hex64_raw:
+    mov     esi, 16
+    jmp     write_hex_raw
+
+write_hex32_raw:
+    mov     esi, 8
+
+write_hex_raw:
     sub     rsp, 24
     lea     r8, [rel hex_digits]
-    mov     ecx, 16
+    mov     ecx, esi
 .next:
     mov     eax, edi
     and     eax, 0x0F
@@ -218,7 +226,6 @@ write_hex64_raw:
     shr     rdi, 4
     loop    .next
     mov     rdi, rsp
-    mov     esi, 16
     call    console_write
     add     rsp, 24
     ret

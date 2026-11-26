@@ -32,6 +32,7 @@ extern write_u64
 extern qemu_shutdown
 extern qemu_reboot
 extern command_cpu
+extern command_crc32
 extern ramfs_mount
 extern ramfs_ls
 extern ramfs_cat
@@ -309,7 +310,7 @@ bad_boot:          db "Invalid Multiboot bootloader magic.", 10, 0
 %macro help_row 2
     %strlen %%label_length %1
     db %1
-    times 9 - %%label_length db ' '
+    times 10 - %%label_length db ' '
     db ' ', %2, 10
 %endmacro
 
@@ -322,6 +323,7 @@ help_text:
     help_row "memmap",   "Show the Multiboot memory map"
     help_row "ls",       "List files in the RAM filesystem"
     help_row "cat FILE", "Print a file from the RAM filesystem"
+    help_row "crc32 FILE", "Show a RAM file's CRC-32 checksum"
     help_row "echo",     "Print text or write it to a RAM file with >"
     help_row "rm FILE",  "Remove a writable RAM file"
     help_row "uptime",   "Show time since boot"
@@ -359,6 +361,7 @@ mem_name:          db "mem", 0
 memmap_name:       db "memmap", 0
 ls_name:           db "ls", 0
 cat_name:          db "cat", 0
+crc32_name:        db "crc32", 0
 echo_name:         db "echo", 0
 rm_name:           db "rm", 0
 uptime_name:       db "uptime", 0
@@ -380,6 +383,7 @@ commands:
     dq memmap_name, command_memmap, 0
     dq ls_name, ramfs_ls, 0
     dq cat_name, ramfs_cat, 1
+    dq crc32_name, command_crc32, 1
     dq echo_name, command_echo, 1
     dq rm_name, ramfs_rm, 1
     dq uptime_name, command_uptime, 0

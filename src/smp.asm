@@ -12,6 +12,10 @@ default rel
 %define PING_DRAINING 2
 %define PING_IRR_REG (APIC_REG_IRR_BASE + (APIC_PING_VECTOR / 32) * 16)
 %define PING_IRR_BIT (1 << (APIC_PING_VECTOR % 32))
+%define CRC_TIMEOUT_NS 100000000
+%define CRC_RUNNING 1
+%define CRC_DONE 2
+%define CRC_POSTED_BASE 256
 
 extern pml4_table
 extern gdt64_ptr
@@ -27,6 +31,7 @@ extern console_write_cstr
 extern write_u64
 extern apic_wait_icr
 extern apic_send_ipi
+extern crc32_buffer
 
 section .text
 
@@ -37,6 +42,8 @@ global smp_stack_pages
 global command_cpu_ping
 global smp_ping_irq
 global smp_ping_drain_irq
+global smp_crc32
+global smp_crc_irq
 
 ; rdi = Multiboot info.
 smp_init:
@@ -258,6 +265,105 @@ smp_stack_pages:
     dec     eax
 .done:
     ret
+
+; rdi = data, rsi = byte length, edx != 0 for a writable file.
+; Return CRC-32 in eax. The boot CPU can calculate locally if the worker
+; is unavailable. It owns the slot and publishes all job data before posting.
+smp_crc32:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12, rdi
+    mov     r13, rsi
+    mov     r14d, edx
+    mov     eax, [rel crc_job_state]
+    test    eax, eax
+    jz      .find_worker
+    cmp     eax, CRC_DONE
+    jne     .local
+    mov     dword [rel crc_job_state], 0
+
+.find_worker:
+    xor     ebx, ebx
+    lea     rax, [rel ap_started]
+.next_worker:
+    cmp     bl, [rel bsp_apic_id]
+    je      .advance
+    cmp     byte [rax + rbx], 0
+    jne     .prepare
+.advance:
+    inc     ebx
+    cmp     ebx, APIC_ID_COUNT
+    jb      .next_worker
+    jmp     .local
+
+.prepare:
+    ; The console can overwrite or remove a writable file after timeout.
+    ; Keep a snapshot in the slot until the worker is done reading it.
+    test    r14d, r14d
+    jz      .publish
+    cmp     r13, PAGE_SIZE
+    ja      .local
+    lea     rdi, [rel crc_job_snapshot]
+    mov     rsi, r12
+    mov     rcx, r13
+    rep     movsb
+    lea     rdi, [rel crc_job_snapshot]
+.publish:
+    mov     [rel crc_job_data], rdi
+    mov     [rel crc_job_size], r13
+    lea     r15d, [rbx + CRC_POSTED_BASE]
+    mov     [rel crc_job_state], r15d
+
+    mov     edi, ebx
+    mov     esi, APIC_CRC_VECTOR
+    mov     rdx, [rel g_smp_apic_base]
+    call    apic_send_ipi
+    cmp     eax, APIC_IPI_NOT_SENT
+    je      .fallback
+    call    timer_ns
+    lea     r14, [rax + CRC_TIMEOUT_NS]
+.wait:
+    cmp     dword [rel crc_job_state], CRC_DONE
+    je      .result
+    call    timer_ns
+    cmp     rax, r14
+    jae     .fallback
+    pause
+    jmp     .wait
+
+.fallback:
+    ; Cancel an unclaimed job. A running job retains its slot and data
+    ; until completion, even though the boot CPU returns its own result.
+    mov     eax, r15d
+    xor     edx, edx
+    lock cmpxchg [rel crc_job_state], edx
+    cmp     eax, CRC_DONE
+    je      .result
+.local:
+    mov     rdi, r12
+    mov     rsi, r13
+    call    crc32_buffer
+    jmp     .done
+.result:
+    mov     eax, [rel crc_job_result]
+    mov     dword [rel crc_job_state], 0
+.done:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+smp_crc_irq:
+    push    rax
+    mov     rax, [rel g_smp_apic_base]
+    mov     dword [rax + APIC_REG_EOI], 0
+    pop     rax
+    iretq
 
 command_cpu_ping:
     push    rbx
@@ -693,6 +799,7 @@ ap_entry64:
     mov     dword [rax + APIC_REG_SVR], APIC_SVR_ENABLE | APIC_SPURIOUS_VECTOR
     mov     eax, [rax + APIC_REG_ID]
     shr     eax, 24
+    lea     r12d, [rax + CRC_POSTED_BASE]
     lea     rcx, [rel ap_started]
     mov     byte [rcx + rax], 1
     cmp     byte [rel ap_broadcast], 0
@@ -702,6 +809,23 @@ ap_entry64:
     lock inc dword [rel g_smp_online_cpus]
 
 .ap_idle:
+    cli
+    ; The APIC ID is part of the expected state, so a delayed claim
+    ; cannot take a job that was cancelled and posted to another AP.
+    cmp     [rel crc_job_state], r12d
+    jne     .ap_sleep
+    mov     eax, r12d
+    mov     ecx, CRC_RUNNING
+    lock cmpxchg [rel crc_job_state], ecx
+    jne     .ap_sleep
+    sti
+    mov     rdi, [rel crc_job_data]
+    mov     rsi, [rel crc_job_size]
+    call    crc32_buffer
+    mov     [rel crc_job_result], eax
+    mov     dword [rel crc_job_state], CRC_DONE
+    jmp     .ap_idle
+.ap_sleep:
     sti
     hlt
     jmp     .ap_idle
@@ -830,6 +954,11 @@ ap_ping_pending:  resb APIC_ID_COUNT
 
 alignb 8
 ap_stack_tops:     resq OS_MAX_CPUS - 1
+crc_job_data:      resq 1
+crc_job_size:      resq 1
+crc_job_state:     resd 1
+crc_job_result:    resd 1
+crc_job_snapshot:  resb PAGE_SIZE
 
 section .ap_fallback nobits alloc noexec write align=4096
 fallback_ap_stacks: resb (OS_MAX_CPUS - 1) * PAGE_SIZE

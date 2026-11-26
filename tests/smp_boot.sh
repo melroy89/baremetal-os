@@ -88,6 +88,48 @@ check_lost_ping() {
     check_ping_result 'replied' 3
 }
 
+check_crc_worker() {
+    local deadline result
+    expect_serial 'baremetal> '
+    printf 'echo 123456789 > test.txt\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf 'crc32 test.txt\r' >&"$serial_write"
+    expect_serial $'\r?\nE0117756\r?\nbaremetal> '
+
+    # A lost wake cancels an unclaimed job. The following request is
+    # claimed by the worker but delayed past the timeout.
+    printf 'crc32 test.txt\r' >&"$serial_write"
+    expect_serial $'\r?\nE0117757\r?\nbaremetal> '
+    printf 'crc32 test.txt\r' >&"$serial_write"
+    expect_serial $'\r?\nE0117757\r?\nbaremetal> '
+    check_ping_result 'replied' 3
+
+    printf 'echo replacement > test.txt\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+    printf 'crc32 test.txt\r' >&"$serial_write"
+    expect_serial $'\r?\nA48A7BE9\r?\nbaremetal> '
+    printf 'crc-go\r' >&"$serial_write"
+    expect_serial 'baremetal> '
+
+    deadline=$((SECONDS + 3))
+    while (( SECONDS < deadline )); do
+        printf 'crc32 test.txt\r' >&"$serial_write"
+        expect_serial $'\r?\n(A48A7BE[89]|FFFFFFFF)\r?\n'
+        result=${BASH_REMATCH[1]}
+        expect_serial 'baremetal> '
+        case "$result" in
+            A48A7BE8) return 0 ;;
+            FFFFFFFF)
+                printf 'The delayed worker read overwritten file data\n' >&2
+                return 1
+                ;;
+        esac
+        sleep 0.02
+    done
+    printf 'The CRC-32 worker did not become available after completing its delayed job\n' >&2
+    return 1
+}
+
 build_dir=${1:-build}
 run_guest 'SMP without a Multiboot memory map' 4 64M check_missing_map \
     -kernel "$build_dir/smp-fixture-missing_map.elf"
@@ -97,3 +139,5 @@ run_guest 'SMP with delayed secondary CPUs' 4 64M check_delayed_aps \
     -kernel "$build_dir/smp-fixture-delayed_ap.elf"
 run_guest 'SMP with rejected and lost ping IPIs' 4 64M check_lost_ping \
     -kernel "$build_dir/smp-fixture-lost_ping.elf"
+run_guest 'CRC-32 worker dispatch, timeout and recovery' 4 64M check_crc_worker \
+    -kernel "$build_dir/smp-fixture-crc32_work.elf"

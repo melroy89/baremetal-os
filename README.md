@@ -58,6 +58,7 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 | `memmap`   | Show the memory ranges and types reported by Multiboot           |
 | `ls`       | List files in the RAM filesystem                                 |
 | `cat FILE` | Print a file from the RAM filesystem                             |
+| `crc32 FILE` | Show a RAM file's CRC-32 checksum                             |
 | `echo`     | Print text or write it to a RAM file with `> FILE`               |
 | `rm FILE`  | Remove a writable RAM file                                       |
 | `uptime`   | Show time since boot in milliseconds                             |
@@ -68,6 +69,8 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 | `halt`     | Power off the machine                                            |
 
 `cpu ping` sends an interrupt to each online secondary CPU and reports its reply or timeout. Run it again to retry after a timeout. In a four-vCPU guest, expect three replies. A one-vCPU guest has no secondary CPUs to ping.
+
+`crc32 FILE` prints the standard CRC-32 checksum of the file's bytes as eight hexadecimal digits. It uses a secondary CPU when one is ready, with the boot CPU as a fallback.
 
 ## Run with libvirt
 

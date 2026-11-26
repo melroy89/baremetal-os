@@ -10,6 +10,7 @@ extern console_write_cstr
 extern console_input_irq
 extern smp_ping_irq
 extern smp_ping_drain_irq
+extern smp_crc_irq
 extern write_hex64_raw
 
 global _start
@@ -305,6 +306,8 @@ isr_stub_table:
     dq smp_ping_drain_irq
     times APIC_PING_VECTOR - ($ - isr_stub_table) / 8 dq 0
     dq smp_ping_irq
+    times APIC_CRC_VECTOR - ($ - isr_stub_table) / 8 dq 0
+    dq smp_crc_irq
     times APIC_SPURIOUS_VECTOR - ($ - isr_stub_table) / 8 dq 0
     dq apic_spurious_irq
 IDT_ENTRIES equ ($ - isr_stub_table) / 8
