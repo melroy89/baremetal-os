@@ -20,11 +20,12 @@ jobs:
           persist-credentials: false
 
       - name: Install build and test tools
+        # The ubuntu-26.04 runner image includes binutils and make.
         run: |
-          sudo apt-get update
+          sudo apt-get -o Acquire::Languages=none update
           sudo apt-get install -y --no-install-recommends \
-            nasm binutils make grub-common grub-pc-bin grub-efi-amd64-bin \
-            mtools xorriso qemu-system-x86 ovmf
+            nasm grub-common grub-pc-bin grub-efi-amd64-bin \
+            mtools xorriso qemu-system-x86 ovmf-generic
 
       - name: Build the kernel and hybrid ISO
         run: make -j"$(nproc)" os-check os-iso
