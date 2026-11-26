@@ -35,3 +35,6 @@ jobs:
 
       - name: Boot the ELF and ISO in QEMU
         run: bash tests/boot_smoke.sh
+
+      - name: Test SMP startup with constrained boot inputs
+        run: make -j"$(nproc)" test-smp

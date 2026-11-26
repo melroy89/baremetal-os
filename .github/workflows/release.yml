@@ -27,7 +27,7 @@ jobs:
 
       - name: Build and test the release
         run: |
-          make -j"$(nproc)" os-check os-iso test-pages
+          make -j"$(nproc)" os-check os-iso test-pages test-smp
           bash tests/boot_smoke.sh
 
       - name: Verify the version and generate checksums

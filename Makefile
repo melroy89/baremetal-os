@@ -7,10 +7,11 @@ BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
 OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o drivers.o kernel.o pages.o runtime.o smp.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
+SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf)
 RAM     ?= 64M
 SMP     ?= 1
 
-.PHONY: all os os-check os-run os-iso test-pages clean
+.PHONY: all os os-check os-run os-iso test-pages test-smp clean
 
 all: os
 
@@ -48,6 +49,22 @@ $(BUILD)/test_pages: $(BUILD)/test_pages.o $(BUILD)/pages.o $(BUILD)/runtime.o
 
 test-pages: $(BUILD)/test_pages
 	./$(BUILD)/test_pages
+
+$(BUILD)/smp-fixture-%.o: tests/smp_boot_fixture.asm src/os_constants.inc | $(BUILD)
+	$(NASM) -f elf64 -Isrc/ -DTEST_$* $< -o $@
+
+$(BUILD)/smp-fixture-missing_map.elf64 $(BUILD)/smp-fixture-one_page.elf64: SMP_WRAPPERS := --wrap=smp_init
+$(BUILD)/smp-fixture-delayed_ap.elf64: SMP_WRAPPERS := --wrap=pit_delay_us --wrap=console_readline
+
+$(BUILD)/smp-fixture-%.elf64: $(BUILD)/smp-fixture-%.o $(OBJECTS) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		$(SMP_WRAPPERS) $(filter %.o,$^) -o $@
+
+$(BUILD)/smp-fixture-%.elf: $(BUILD)/smp-fixture-%.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
+
+test-smp: $(SMP_FIXTURES)
+	bash tests/smp_boot.sh "$(BUILD)"
 
 os-run: $(KERNEL)
 	$(QEMU) -enable-kvm -cpu host -m $(RAM) -smp $(SMP) -nic none \
