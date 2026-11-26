@@ -528,7 +528,8 @@ console_input_irq:
     iretq
 
 ; int64 console_readline(char *buf in rdi, uint64 max_len in rsi)
-; Returns length >= 0 (NUL-terminated), or -1 on Ctrl-D (EOF).
+; Returns length >= 0 (NUL-terminated), -1 on Ctrl-D, or LINE_TOO_LONG
+; after consuming an overlong line through its terminator.
 ; ============================================================================
 console_readline:
     push    rbx
@@ -573,6 +574,8 @@ console_readline:
 
     cmp     eax, 13                     ; '\r'
     je      .got_cr
+    cmp     rbx, LINE_TOO_LONG
+    je      .poll
     cmp     eax, 4                      ; Ctrl-D (EOF)
     je      .got_eof
     cmp     eax, 8                      ; Backspace
@@ -584,12 +587,17 @@ console_readline:
     cmp     eax, 0x20
     jb      .poll
     cmp     rbx, r13
-    jae     .poll
+    jae     .overflow
 
     mov     [r12 + rbx], al
     inc     rbx
     mov     edi, eax
     call    console_putc
+    jmp     .poll
+
+.overflow:
+    mov     rbx, LINE_TOO_LONG
+    mov     byte [r12], 0
     jmp     .poll
 
 .got_bs:
@@ -611,18 +619,19 @@ console_readline:
 .got_cr:
     mov     byte [rel last_was_cr], 1
 .enter:
+    cmp     rbx, LINE_TOO_LONG
+    je      .newline
     mov     byte [r12 + rbx], 0
+.newline:
     mov     edi, 10
     call    console_putc
     mov     rax, rbx
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
+    jmp     .return
 
 .got_eof:
     mov     byte [r12 + rbx], 0
     mov     rax, -1
+.return:
     pop     r13
     pop     r12
     pop     rbx

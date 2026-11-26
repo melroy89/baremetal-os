@@ -32,6 +32,11 @@ extern write_u64
 extern qemu_shutdown
 extern qemu_reboot
 extern command_cpu
+extern ramfs_mount
+extern ramfs_ls
+extern ramfs_cat
+extern ramfs_rm
+extern command_echo
 
 section .text
 global kernel_main
@@ -52,6 +57,8 @@ kernel_main:
     call    record_boot_event
     mov     edi, [rel g_mb_info]
     call    smp_init
+    mov     edi, [rel g_mb_info]
+    call    ramfs_mount
     mov     eax, [rel g_smp_online_cpus]
     mov     [rel boot_cpus_started], eax
     mov     eax, [rel g_smp_total_cpus]
@@ -76,6 +83,8 @@ kernel_main:
     lea     rdi, [rel line_buffer]
     mov     esi, LINE_BUF_SIZE
     call    console_readline
+    cmp     rax, LINE_TOO_LONG
+    je      .too_long
     test    rax, rax
     js      command_halt
     jz      .prompt
@@ -101,6 +110,22 @@ kernel_main:
     jne     .lookup
     inc     r12
 .lookup:
+    mov     r13, r12
+.scan_command:
+    mov     al, [r13]
+    test    al, al
+    jz      .find_command
+    cmp     al, ' '
+    je      .split
+    inc     r13
+    jmp     .scan_command
+.split:
+    mov     byte [r13], 0
+.skip_space:
+    inc     r13
+    cmp     byte [r13], ' '
+    je      .skip_space
+.find_command:
     lea     rbx, [rel commands]
 .next:
     mov     rsi, [rbx]
@@ -110,14 +135,25 @@ kernel_main:
     call    str_eq
     test    eax, eax
     jnz     .run
-    add     rbx, 16
+    add     rbx, 24
     jmp     .next
 .run:
+    mov     rdi, r13
+    cmp     byte [rdi], 0
+    je      .invoke
+    cmp     qword [rbx + 16], 0         ; Does this command accept arguments?
+    je      .unknown
+.invoke:
     call    [rbx + 8]
     jmp     .prompt
 
 .unknown:
     lea     rdi, [rel unknown]
+    call    console_write_cstr
+    jmp     .prompt
+
+.too_long:
+    lea     rdi, [rel command_too_long]
     call    console_write_cstr
     jmp     .prompt
 
@@ -267,18 +303,33 @@ section .rodata
 welcome:           db "Bare Metal OS | x86-64", 10, "Type help for commands.", 10, 0
 prompt:            db "baremetal> ", 0
 unknown:           db "Unknown command. Type help.", 10, 0
+command_too_long:  db "Command too long.", 10, 0
 bad_boot:          db "Invalid Multiboot bootloader magic.", 10, 0
-help_text:         db "help    Show console commands", 10
-                   db "info    Show CPU and usable memory information", 10
-                   db "cpu     Show boot CPU capabilities and processors started", 10
-                   db "mem     Show pages managed, used and free by the kernel", 10
-                   db "memmap  Show the Multiboot memory map", 10
-                   db "uptime  Show time since boot", 10
-                   db "log     Show boot milestones", 10
-                   db "version Show the kernel version and build identifier", 10
-                   db "clear   Clear the console", 10
-                   db "reboot  Restart the machine", 10
-                   db "halt    Power off the machine", 10, 0
+
+%macro help_row 2
+    %strlen %%label_length %1
+    db %1
+    times 9 - %%label_length db ' '
+    db ' ', %2, 10
+%endmacro
+
+help_text:
+    help_row "help",     "Show console commands"
+    help_row "info",     "Show CPU and usable memory information"
+    help_row "cpu",      "Show boot CPU capabilities and processors started"
+    help_row "mem",      "Show pages managed, used and free by the kernel"
+    help_row "memmap",   "Show the Multiboot memory map"
+    help_row "ls",       "List files in the RAM filesystem"
+    help_row "cat FILE", "Print a file from the RAM filesystem"
+    help_row "echo",     "Print text or write it to a RAM file with >"
+    help_row "rm FILE",  "Remove a writable RAM file"
+    help_row "uptime",   "Show time since boot"
+    help_row "log",      "Show boot milestones"
+    help_row "version",  "Show the kernel version and build identifier"
+    help_row "clear",    "Clear the console"
+    help_row "reboot",   "Restart the machine"
+    help_row "halt",     "Power off the machine"
+    db 0
 info_text:         db "Architecture: x86-64", 10, 0
 cpu_count_text:    db "CPUs started: ", 0
 ap_stack_text:     db "Secondary CPU stack pages: ", 0
@@ -293,7 +344,7 @@ milliseconds_text: db " ms", 10, 0
 poweroff_text:     db "Powering off...", 10, 0
 reboot_text:       db "Rebooting...", 10, 0
 reboot_failed:     db "Reboot failed.", 10, 0
-version_text:      db "Bare Metal OS 1.1.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
+version_text:      db "Bare Metal OS 1.2.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
 log_text:          db "Boot log", 10, 0
 event_multiboot:   db "Multiboot handoff accepted.", 10, 0
 event_timer:       db "Timer initialized.", 10, 0
@@ -305,6 +356,10 @@ info_name:         db "info", 0
 cpu_name:          db "cpu", 0
 mem_name:          db "mem", 0
 memmap_name:       db "memmap", 0
+ls_name:           db "ls", 0
+cat_name:          db "cat", 0
+echo_name:         db "echo", 0
+rm_name:           db "rm", 0
 uptime_name:       db "uptime", 0
 log_name:          db "log", 0
 version_name:      db "version", 0
@@ -316,19 +371,24 @@ exit_name:         db "exit", 0
 
 align 8
 commands:
-    dq help_name, command_help
-    dq info_name, command_info
-    dq cpu_name, command_cpu
-    dq mem_name, command_mem
-    dq memmap_name, command_memmap
-    dq uptime_name, command_uptime
-    dq log_name, command_log
-    dq version_name, command_version
-    dq clear_name, console_clear
-    dq reboot_name, command_reboot
-    dq halt_name, command_halt
-    dq quit_name, command_halt
-    dq exit_name, command_halt
+    ; Name, handler, accepts arguments
+    dq help_name, command_help, 0
+    dq info_name, command_info, 0
+    dq cpu_name, command_cpu, 0
+    dq mem_name, command_mem, 0
+    dq memmap_name, command_memmap, 0
+    dq ls_name, ramfs_ls, 0
+    dq cat_name, ramfs_cat, 1
+    dq echo_name, command_echo, 1
+    dq rm_name, ramfs_rm, 1
+    dq uptime_name, command_uptime, 0
+    dq log_name, command_log, 0
+    dq version_name, command_version, 0
+    dq clear_name, console_clear, 0
+    dq reboot_name, command_reboot, 0
+    dq halt_name, command_halt, 0
+    dq quit_name, command_halt, 0
+    dq exit_name, command_halt, 0
     dq 0
 
 section .bss

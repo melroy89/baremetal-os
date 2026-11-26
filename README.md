@@ -10,6 +10,7 @@ Download the latest release from [GitHub Releases](https://github.com/melroy89/b
 
 - `baremetal-os.elf` boots directly as a kernel in QEMU/KVM.
 - `baremetal-os.iso` boots as a CD/DVD image with BIOS or UEFI firmware.
+- `SHA256SUMS` lets you verify the downloads.
 
 ![Bare Metal OS 1.1.0 running in QEMU/KVM, showing console help, CPU details, and page counts](assets/baremetal-os.png)
 
@@ -47,19 +48,23 @@ For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/s
 
 ## Console
 
-| Command   | Action                                                              |
-| --------- | ------------------------------------------------------------------- |
-| `help`    | List commands                                                       |
-| `info`    | Show CPUs started, secondary stack pages, and usable RAM            |
-| `cpu`     | Show the boot CPU vendor, model, and capabilities                   |
-| `mem`     | Show how many 4 KiB pages the kernel manages, uses, and has free    |
-| `memmap`  | Show the memory ranges and types reported by Multiboot              |
-| `uptime`  | Show time since boot in milliseconds                                |
-| `log`     | Replay milestones from the current boot                             |
-| `version` | Show the kernel version and source build identifier                 |
-| `clear`   | Clear VGA and ANSI-compatible serial terminals                      |
-| `reboot`  | Restart the QEMU guest                                              |
-| `halt`    | Power off the machine                                               |
+| Command    | Action                                                           |
+| ---------- | ---------------------------------------------------------------- |
+| `help`     | List commands                                                    |
+| `info`     | Show CPUs started, secondary stack pages, and usable RAM         |
+| `cpu`      | Show the boot CPU vendor, model, and capabilities                |
+| `mem`      | Show how many 4 KiB pages the kernel manages, uses, and has free |
+| `memmap`   | Show the memory ranges and types reported by Multiboot           |
+| `ls`       | List files in the RAM filesystem                                 |
+| `cat FILE` | Print a file from the RAM filesystem                             |
+| `echo`     | Print text or write it to a RAM file with `> FILE`               |
+| `rm FILE`  | Remove a writable RAM file                                       |
+| `uptime`   | Show time since boot in milliseconds                             |
+| `log`      | Replay milestones from the current boot                          |
+| `version`  | Show the kernel version and source build identifier              |
+| `clear`    | Clear VGA and ANSI-compatible serial terminals                   |
+| `reboot`   | Restart the QEMU guest                                           |
+| `halt`     | Power off the machine                                            |
 
 ## Run with libvirt
 
@@ -101,6 +106,39 @@ virsh -c qemu:///system vol-upload --pool default baremetal-os-kernel.elf bareme
 
 For **OVMF (UEFI)**, disable Secure Boot, leave **Pre-Enroll keys** unchecked if you add an EFI disk, and add a serial port backed by a socket. Start the VM and connect from the Proxmox host with `qm terminal VMID`, replacing `VMID` with the VM's ID. [Proxmox VE VM configuration guide](https://pve.proxmox.com/pve-docs/chapter-qm.html)
 
+## Advanced features
+
+### Write files in RAM
+
+You can create a RAM file at the console without loading a boot archive.
+
+```text
+echo "This is some text"
+echo "3 > 2" > comparison.txt
+ls
+cat comparison.txt
+rm comparison.txt
+```
+
+Double quotes around the text are optional. Use them to preserve surrounding spaces or print a literal `>`. The `> FILE` redirection creates or replaces a file and adds a newline. Enter the filename without quotes and leave `>` and `"` out of the name. Each writable file takes one 4 KiB page, which `rm` returns to the kernel. Writable files disappear on reboot.
+
+### Load an optional RAM filesystem archive
+
+To start with files already available, create an uncompressed USTAR archive of regular files at the archive root. File names in RAM and in the archive can contain up to 99 printable ASCII characters, with no slashes or leading or trailing spaces. Pass the archive to QEMU as a boot module.
+
+```sh
+printf 'Hello from RAM\n' > hello.txt
+tar --format=ustar -cf ramfs.tar hello.txt
+qemu-system-x86_64 -enable-kvm -cpu host -m 64M -nic none \
+  -kernel baremetal-os.elf -initrd ramfs.tar -display none -serial stdio -monitor none
+```
+
+At the prompt, try `ls` and `cat hello.txt`. Archive files are read-only. Writing to an archive filename creates a writable copy that takes precedence. Removing the copy makes the original visible again.
+
+The kernel indexes the archive when it boots, using additional pages for larger archives. If an archive contains the same filename more than once, `cat` reads the last entry and `ls` lists the filename once.
+
+When building from source, use `make os-run INITRAMFS=ramfs.tar` for the same setup. In a custom GRUB image, load the archive as the first boot module with `module /boot/ramfs.tar` after the `multiboot` command.
+
 ---
 
 ## Build from source
@@ -127,7 +165,7 @@ The image is `build/baremetal-os.iso`. If you added a GRUB platform after buildi
 
 ### Kernel overview
 
-The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between keyboard and serial interrupts. There is currently no user space, filesystem, or networking stack.
+The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between keyboard and serial interrupts. There is currently no user space, disk filesystem, or networking stack.
 
 ## Credits
 

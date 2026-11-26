@@ -5,13 +5,14 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o drivers.o kernel.o pages.o runtime.o smp.o)
+OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o drivers.o echo.o kernel.o pages.o ramfs.o runtime.o smp.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf)
 RAM     ?= 64M
 SMP     ?= 1
+INITRAMFS ?=
 
-.PHONY: all os os-check os-run os-iso test-pages test-smp clean
+.PHONY: all os os-check os-run os-iso test-pages test-smp test-ramfs clean
 
 all: os
 
@@ -66,9 +67,13 @@ $(BUILD)/smp-fixture-%.elf: $(BUILD)/smp-fixture-%.elf64
 test-smp: $(SMP_FIXTURES)
 	bash tests/smp_boot.sh "$(BUILD)"
 
+test-ramfs: $(KERNEL) $(BUILD)/smp-fixture-one_page.elf
+	bash tests/ramfs_boot.sh "$(BUILD)"
+
 os-run: $(KERNEL)
 	$(QEMU) -enable-kvm -cpu host -m $(RAM) -smp $(SMP) -nic none \
-		-kernel $(KERNEL) -display none -serial stdio -monitor none
+		-kernel $(KERNEL) $(if $(INITRAMFS),-initrd "$(INITRAMFS)") \
+		-display none -serial stdio -monitor none
 
 os-iso: $(BUILD)/baremetal-os.iso
 

@@ -38,3 +38,6 @@ jobs:
 
       - name: Test SMP startup with constrained boot inputs
         run: make -j"$(nproc)" test-smp
+
+      - name: Test the RAM filesystem
+        run: make test-ramfs

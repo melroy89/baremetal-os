@@ -84,3 +84,4 @@
 %define OS_MAX_CPUS         64
 %define BSP_STACK_SIZE      65536
 %define LINE_BUF_SIZE       1024
+%define LINE_TOO_LONG       -2
