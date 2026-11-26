@@ -2,7 +2,15 @@
 
 [![Boot smoke tests](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml/badge.svg)](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml)
 
-A small standalone operating system written in x86-64 assembly (NASM). At startup, a Multiboot 1 bootloader hands control to the kernel in 32-bit mode. The kernel switches the CPU to 64-bit mode and opens a text console you can use with a screen and keyboard or through a serial terminal.
+Bare Metal OS is a small operating system written in x86-64 assembly and designed for speed and simplicity. It boots directly to an interactive text console and idles the CPU while waiting for input.
+
+**Key features**
+
+- Fast direct kernel boot in QEMU/KVM, plus ISO boot on BIOS and UEFI.
+- GPT partition inspection and volume mounting, with writable FAT32, read-only ext2, and a built-in RAM filesystem.
+- Browse multiple mounted volumes with `cd` and `ls`, read files with `cat`, and copy them between volumes with `cp`.
+- Multicore startup and tools to inspect CPUs, memory, and PCI devices.
+- IPv4 networking with ARP, UDP, `ping`, a DHCP client, and DNS lookups.
 
 ## Download
 
@@ -79,7 +87,7 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 
 ## Build from source
 
-On Debian, Ubuntu, or Linux Mint, install the build tools, then run `make` from the project checkout.
+The build uses NASM. On Debian, Ubuntu, or Linux Mint, install the build tools, then run `make` from the project checkout.
 
 ```sh
 sudo apt install nasm binutils make coreutils
@@ -104,6 +112,8 @@ The image is `build/baremetal-os.iso`. If you added a GRUB platform after buildi
 Run `make test` for the same suite as GitHub Actions, or use a focused target such as `make test-fat32` or `make test-boot`. The full suite needs the build and ISO tools above, plus QEMU, OVMF, `qemu-img`, `sgdisk`, `dosfstools`, and `socat`.
 
 ### Kernel overview
+
+At startup, a Multiboot 1 bootloader hands control to the kernel in 32-bit mode. The kernel switches the CPU to 64-bit mode before starting the console.
 
 The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between keyboard and serial interrupts. Storage and Ethernet use polled I/O when requested by a console command.
 
