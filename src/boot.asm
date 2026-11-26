@@ -8,6 +8,7 @@ extern kernel_main
 extern console_putc
 extern console_write_cstr
 extern console_input_irq
+extern net_timer_irq
 extern smp_ping_irq
 extern smp_ping_drain_irq
 extern smp_crc_irq
@@ -299,7 +300,8 @@ isr_stub_table:
     dq isr_stub_%+i
 %assign i i+1
 %endrep
-%rep 8
+    dq net_timer_irq
+%rep 7
     dq console_input_irq
 %endrep
     times APIC_DRAIN_VECTOR - ($ - isr_stub_table) / 8 dq 0

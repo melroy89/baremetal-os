@@ -40,11 +40,12 @@ command_cp:
 .open_disk:
     mov     rbp, rax
     mov     esi, edx
-    call    fat_copy_open
+    call    disk_reader_open
     test    rax, rax
     jnz     .error
 .destination:
     mov     r14, rdx
+    mov     [rel reader_size], rdx
     mov     rdi, r13
     mov     esi, 1
     call    resolve_path
@@ -55,6 +56,8 @@ command_cp:
     cmp     rax, RAM_MOUNT
     je      .to_ram
     mov     rbp, rax
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    je      .readonly
     mov     ecx, edx
     mov     rdx, r14
     cmp     r15, RAM_MOUNT
@@ -63,6 +66,7 @@ command_cp:
     call    fat_write
     jmp     .done
 .stream_disk:
+    mov     rsi, [rel reader_chunk]
     call    fat_copy_write
     jmp     .done
 .to_ram:
@@ -82,7 +86,7 @@ command_cp:
     cmp     r12, r13
     jae     .write_ram
     mov     rdi, r12
-    call    fat_copy_chunk
+    call    [rel reader_chunk]
     test    rax, rax
     jnz     .error
     add     r12, BLOCK_SIZE
@@ -92,6 +96,9 @@ command_cp:
     mov     rsi, rbx
     mov     rdx, r14
     call    ramfs_write
+    jmp     .done
+.readonly:
+    call    ext_readonly
     jmp     .done
 .missing_ram:
     call    ramfs_not_found

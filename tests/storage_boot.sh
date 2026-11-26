@@ -66,6 +66,13 @@ check_fat_read() {
     console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
+check_fat_seek() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check "disk crc32 $bad_sector" 'ATA device error\.'
+    console_check 'crc32range 700 600 /disk/range.bin' "$range_crc"$'\r?\n'
+}
+
 check_fat_write() {
     expect_serial 'baremetal> '
     console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
@@ -260,6 +267,26 @@ if [[ $slice == all || $slice == fat32 ]]; then
     subdir_low=$(od -An -tu2 -j $((subdir_entry + 26)) -N 2 "$files/disk.raw")
     subdir_offset=$((data_offset + ((subdir_high << 16) + subdir_low - 2) * 512))
     nested_entry=$(short_entry_offset "$files/disk.raw" "$subdir_offset" 'NESTED  TXT')
+
+    # Inject a read failure in the first data sector, strictly outside the
+    # unaligned range spanning the next two clusters.
+    cp --sparse=always "$files/disk.raw" "$files/seek.raw"
+    printf '%0512d%0512d%0512d' 1 2 3 > "$files/range.bin"
+    mcopy -i "$files/seek.raw@@1048576" "$files/range.bin" ::
+    range_entry=$(short_entry_offset "$files/seek.raw" "$root_offset" 'RANGE   BIN')
+    range_high=$(od -An -tu2 -j $((range_entry + 20)) -N 2 "$files/seek.raw")
+    range_low=$(od -An -tu2 -j $((range_entry + 26)) -N 2 "$files/seek.raw")
+    bad_sector=$((data_offset / 512 + (range_high << 16) + range_low - 2))
+    range_crc=$(dd if="$files/range.bin" bs=1 skip=700 count=600 status=none |
+        gzip -n | tail -c 8 | od -An -N4 -t x4 | tr -d ' \n' | tr 'a-f' 'A-F')
+    cat > "$files/seek.blkdebug" <<EOF
+[inject-error]
+event = "read_aio"
+errno = "5"
+sector = "$bad_sector"
+EOF
+    run_guest 'FAT32 range seek skips an unreadable data sector' 1 64M check_fat_seek -machine pc -kernel "$kernel" \
+        -drive "file=blkdebug:$files/seek.blkdebug:$files/seek.raw,format=raw,if=ide,index=0,rerror=report"
 
     cp --sparse=always "$files/disk.raw" "$files/shared-root.raw"
     copy_cluster_pointer "$files/shared-root.raw" "$host_entry" "$peer_entry"

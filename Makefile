@@ -5,7 +5,7 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o fat32.o gpt.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o vfs.o)
+OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o vfs.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
 FAT_FIXTURES := $(addprefix $(BUILD)/fat32-,interrupt.elf fault.elf overlap.elf)
@@ -14,7 +14,7 @@ SMP     ?= 1
 INITRAMFS ?=
 
 .PHONY: all os os-check os-run os-iso clean \
-	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage test-network
+	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage test-network test-ext2
 
 all: os
 
@@ -27,9 +27,10 @@ $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -I$(BUILD)/ $< -o $@
 
 $(BUILD)/kernel.o: $(BUILD)/build_id.inc
+$(BUILD)/ip.o: src/udp.inc src/dhcp.inc src/dns.inc
 $(BUILD)/fat32.o: src/fat32_check.inc src/fat32_copy.inc
-$(BUILD)/vfs.o: src/vfs_copy.inc
-$(BUILD)/fat32.o $(BUILD)/vfs.o: src/fat32_mount.inc
+$(BUILD)/vfs.o: src/vfs_copy.inc src/vfs_read.inc
+$(BUILD)/ext2.o $(BUILD)/fat32.o $(BUILD)/vfs.o: src/volume.inc
 
 $(BUILD)/build_id.inc: $(BUILD_ID_INPUTS) | $(BUILD)
 	@hash=$$(sha256sum $(BUILD_ID_INPUTS)) && \
@@ -46,7 +47,7 @@ os-check: $(KERNEL)
 	grub-file --is-x86-multiboot $(KERNEL)
 	readelf -l $(KERNEL)
 
-test: os-check test-boot test-pages test-smp test-ramfs test-storage test-network
+test: os-check test-boot test-pages test-smp test-ramfs test-storage test-network test-ext2
 
 test-boot: $(BUILD)/baremetal-os.iso
 	bash tests/boot_smoke.sh "$(BUILD)"
@@ -105,7 +106,10 @@ test-ata test-gpt: test-%: $(KERNEL)
 test-fat32: $(KERNEL) $(FAT_FIXTURES)
 	bash tests/storage_boot.sh "$(BUILD)" fat32
 
-test-network: $(KERNEL)
+test-ext2: $(KERNEL)
+	bash tests/ext2_boot.sh "$(BUILD)"
+
+test-network: $(KERNEL) $(BUILD)/network-fixture.elf $(BUILD)/dns-fault.elf
 	bash tests/network_boot.sh "$(BUILD)"
 
 os-run: $(KERNEL)
@@ -123,3 +127,47 @@ $(BUILD)/baremetal-os.iso: $(KERNEL) boot/grub.cfg
 
 clean:
 	rm -rf $(BUILD)
+
+$(BUILD)/ip-fixture.o: src/ip.asm src/udp.inc src/dhcp.inc src/dns.inc | $(BUILD)
+	$(NASM) -f elf64 -Isrc/ -DTEST_UDP_ECHO=49152 $< -o $@
+
+$(BUILD)/net-dma-fault.o: tests/net_dma_fault.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/network-fixture.elf64: $(filter-out $(BUILD)/ip.o,$(OBJECTS)) $(BUILD)/ip-fixture.o $(BUILD)/net-dma-fault.o src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack --wrap=page_alloc $(filter %.o,$^) -o $@
+
+$(BUILD)/network-fixture.elf: $(BUILD)/network-fixture.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
+
+$(BUILD)/ip-dns-fault.o: src/ip.asm src/udp.inc src/dhcp.inc src/dns.inc | $(BUILD)
+	$(NASM) -f elf64 -Isrc/ -DTEST_UDP_ECHO=49152 -DTEST_DNS_RNG $< -o $@
+
+$(BUILD)/dns-fault.o: tests/dns_fault.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/dns-fault.elf64: $(filter-out $(BUILD)/ip.o,$(OBJECTS)) $(BUILD)/ip-dns-fault.o $(BUILD)/dns-fault.o src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack $(filter %.o,$^) -o $@
+
+$(BUILD)/dns-fault.elf: $(BUILD)/dns-fault.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
+
+.PHONY: bench-ext2
+bench-ext2: $(addprefix $(BUILD)/ext2-bench-,4.elf 16.elf 64.elf)
+	bash tests/ext2_bench.sh "$(BUILD)"
+
+$(BUILD)/ext2-bench.o: tests/ext2_bench.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/vfs-bench-%.o: src/vfs.asm src/vfs_copy.inc src/vfs_read.inc src/volume.inc src/os_constants.inc | $(BUILD)
+	$(NASM) -f elf64 -Isrc/ -DEXT_RANGE_BUFFER='($* * 1024)' $< -o $@
+
+$(BUILD)/ext2-bench-%.elf64: $(BUILD)/vfs-bench-%.o $(BUILD)/ext2-bench.o $(filter-out $(BUILD)/vfs.o,$(OBJECTS)) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack --wrap=ext_read_at $(filter %.o,$^) -o $@
+
+$(BUILD)/ext2-bench-%.elf: $(BUILD)/ext2-bench-%.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
+
+.PHONY: test-network-tap
+test-network-tap: $(KERNEL)
+	unshare --user --map-root-user --net bash tests/network_tap.sh "$(BUILD)"

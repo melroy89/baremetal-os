@@ -8,10 +8,12 @@ extern smp_crc32
 extern console_write_cstr
 extern console_putc
 extern write_hex32_raw
+extern ip_checkpoint
 
 section .text
 global crc32_buffer
 global crc32_update
+global crc32_foreground
 global command_crc32
 
 ; rdi = data, rsi = length in bytes. Return the checksum in eax.
@@ -34,6 +36,38 @@ crc32_update:
     jnz     .next
 .done:
     not     eax
+    ret
+
+; rdi = bytes, rsi = length. The boot CPU services IPv4 between chunks.
+crc32_foreground:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    sub     rsp, 8
+    mov     rbx, rdi
+    mov     r12, rsi
+    xor     r13d, r13d
+.read:
+    mov     r14d, 64 * 1024
+    cmp     r12, r14
+    cmovb   r14, r12
+    mov     rdi, rbx
+    mov     rsi, r14
+    mov     edx, r13d
+    call    crc32_update
+    mov     r13d, eax
+    add     rbx, r14
+    sub     r12, r14
+    jz      .done
+    call    ip_checkpoint
+    jmp     .read
+.done:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
     ret
 
 command_crc32:

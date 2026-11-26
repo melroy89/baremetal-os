@@ -64,7 +64,7 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 | `info`, `cpu`, `mem`       | Inspect the guest, CPU, and memory.                |
 | `lspci`                    | List PCI devices.                                  |
 | `disk info`                | Inspect the attached IDE disk.                     |
-| `net info`                 | Show the Ethernet adapter and link state.          |
+| `net info`                 | Show the Ethernet adapter and IPv4 configuration.          |
 | `ls [PATH]`                | List files in RAM or on a mounted volume.          |
 | `cd PATH`, `pwd`           | Change or show the current directory.              |
 | `cat PATH`, `rm PATH`      | Read or remove a file.                             |
@@ -79,8 +79,8 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 ## Documentation
 
 - [Console commands and RAM files](docs/console.md)
-- [IDE storage, GPT, and FAT32](docs/storage.md)
-- [Ethernet setup and frame commands](docs/networking.md)
+- [IDE storage, GPT, FAT32, and ext2](docs/storage.md)
+- [IPv4 setup and Ethernet commands](docs/networking.md)
 - [Run with libvirt or Proxmox VE](docs/virtualization.md)
 
 ---
@@ -109,13 +109,13 @@ The image is `build/baremetal-os.iso`. If you added a GRUB platform after buildi
 
 ### Run the tests
 
-Run `make test` for the same suite as GitHub Actions, or use a focused target such as `make test-fat32` or `make test-boot`. The full suite needs the build and ISO tools above, plus QEMU, OVMF, `qemu-img`, `sgdisk`, `dosfstools`, and `socat`.
+Run `make test` for the same suite as GitHub Actions, or use a focused target such as `make test-fat32` or `make test-boot`. The full suite needs the build and ISO tools above, plus QEMU, OVMF, `qemu-img`, `sgdisk`, `dosfstools`, `e2fsprogs`, and `socat`.
 
 ### Kernel overview
 
 At startup, a Multiboot 1 bootloader hands control to the kernel in 32-bit mode. The kernel switches the CPU to 64-bit mode before starting the console.
 
-The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between keyboard and serial interrupts. Storage and Ethernet use polled I/O when requested by a console command.
+The kernel sets up paging and CPU exception handlers and starts additional CPUs through the local APIC. When the CPU list is known and enough pages are available, the allocator supplies one 4 KiB stack page per secondary CPU, counted in `mem`. Other boot paths use stack space reserved by the loader. The boot CPU runs the console and sleeps between input interrupts. When IPv4 is enabled, a timer also wakes it to service Ethernet. Storage uses polled I/O.
 
 ## Credits
 

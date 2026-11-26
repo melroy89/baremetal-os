@@ -1,7 +1,10 @@
-%define FAT_MOUNT_COUNT 4
-%define FAT_MOUNT_NAME_SIZE 32
+; Shared mount identity and backend geometry.
+%define VOLUME_MOUNT_COUNT 4
+%define VOLUME_MOUNT_NAME_SIZE 32
+%define FS_FAT32 0
+%define FS_EXT2 1
 
-struc fat_volume
+struc mount_volume
     .volume_base:          resq 1
     .partition_last:       resq 1
     .total_sectors:        resq 1
@@ -18,6 +21,16 @@ struc fat_volume
     .mounted:             resb 1
     .pending_write:       resb 1
     .write_error:         resb 1
-    .name:                resb FAT_MOUNT_NAME_SIZE
+    .name:                resb VOLUME_MOUNT_NAME_SIZE
+    .type:                resb 1
+    alignb 4
+    .ext_blocks:          resd 1
+    .ext_inodes:          resd 1
+    .ext_blocks_group:    resd 1
+    .ext_inodes_group:    resd 1
+    .ext_inode_size:      resd 1
+    .ext_inode_blocks:    resd 1
+    .ext_gdt_blocks:      resd 1
+    .ext_features:        resd 1
     alignb 8
 endstruc

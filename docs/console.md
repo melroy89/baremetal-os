@@ -31,26 +31,27 @@ For more info read: [IDE storage and file commands](storage.md).
 
 ## Ethernet
 
-Use `net info` to check the link, `net recv` to read a frame, and `net send` to send one.
+DHCP starts automatically when the e1000 driver initializes. Use `net info` to check the address and `ping HOST` to check connectivity. Use `net static` for manual addressing or `net off` for raw Ethernet.
 
-For more info read: [Ethernet setup and frame commands](networking.md).
+For more info read: [IPv4 setup and Ethernet commands](networking.md).
 
 ## Files and directories
 
 The console starts at `/`. Use `ls` there to see mounted volumes, or `cd /ram` to work with temporary files. Relative paths start in the current directory.
 
-| Command              | Action                                               |
-| -------------------- | ---------------------------------------------------- |
-| `ls [PATH]`          | List the current directory or `PATH`.                |
-| `cd PATH`            | Change directory. Use `cd ..` to go up.              |
-| `pwd`                | Show the current directory.                          |
-| `cat PATH`           | Print a file.                                        |
-| `echo [TEXT]`        | Print text and a newline.                            |
-| `echo [TEXT] > PATH` | Write text and a newline to a file.                  |
-| `cp SOURCE DEST`     | Copy a file between or within mounted volumes.       |
-| `touch PATH`         | Create an empty file. Existing files stay unchanged. |
-| `rm PATH`            | Remove a writable file.                              |
-| `crc32 FILE`         | Checksum a file in `/ram` from anywhere.             |
+| Command                         | Action                                                      |
+| ------------------------------- | ----------------------------------------------------------- |
+| `ls [PATH]`                     | List the current directory or `PATH`.                       |
+| `cd PATH`                       | Change directory. Use `cd ..` to go up.                     |
+| `pwd`                           | Show the current directory.                                 |
+| `cat PATH`                      | Print a file.                                               |
+| `echo [TEXT]`                   | Print text and a newline.                                   |
+| `echo [TEXT] > PATH`            | Write text and a newline to a file.                         |
+| `cp SOURCE DEST`                | Copy a file between or within mounted volumes.              |
+| `touch PATH`                    | Create an empty file. Existing files stay unchanged.        |
+| `rm PATH`                       | Remove a writable file.                                     |
+| `crc32 FILE`                    | Checksum a file in `/ram` from anywhere.                    |
+| `crc32range OFFSET LENGTH PATH` | Checksum up to 64 MiB of a file using decimal byte offsets. |
 
 ```text
 cd /ram

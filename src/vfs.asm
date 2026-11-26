@@ -3,7 +3,7 @@ bits 64
 default rel
 
 %include "os_constants.inc"
-%include "fat32_mount.inc"
+%include "volume.inc"
 
 %define RAM_MOUNT 1
 %define PATH_DEPTH 32
@@ -24,11 +24,14 @@ extern ramfs_ls, ramfs_cat, ramfs_write, ramfs_rm, ramfs_touch
 extern fat_mount, fat_unmount, fat_list, fat_cat
 extern fat_write, fat_rm, fat_touch, fat_find_dir, fat_check, fat_repair
 extern fat_validate_root
+extern ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
+extern console_write, parse_lba, crc32_update, write_hex32_raw
+extern gpt_load, gpt_partition
 extern console_write_cstr, console_putc, str_eq
 
 section .text
 global command_ls, command_cat, command_rm, command_touch, command_cd, command_pwd
-global vfs_write, command_mount, command_umount, vfs_mount_overlap
+global vfs_write, command_mount, command_umount, vfs_mount_partition
 global disk_check_volume, disk_repair_volume
 
 command_pwd:
@@ -68,8 +71,16 @@ command_ls:
     push    rbp
     mov     rbp, rax
     mov     edi, edx
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    je      .ext
     call    fat_list
     pop     rbp
+    ret
+.ext:
+    call    ext_list
+    pop     rbp
+    test    rax, rax
+    jnz     print_error
     ret
 
 command_cat:
@@ -103,7 +114,8 @@ file_command:
     push    rbp
     sub     rsp, 8
     mov     rbp, rax
-    call    [rbx + 8]
+    movzx   eax, byte [rbp + mount_volume.type]
+    call    [rbx + 8 + rax * 8]
     add     rsp, 8
     pop     rbp
     pop     rbx
@@ -135,10 +147,15 @@ vfs_write:
     cmp     rax, RAM_MOUNT
     je      .ram
     mov     rbp, rax
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    je      .readonly
     call    fat_write
     jmp     .done
 .ram:
     call    ramfs_write
+    jmp     .done
+.readonly:
+    call    ext_readonly
 .done:
     pop     r13
     pop     r12
@@ -233,7 +250,13 @@ resolve_path:
     push    rbp
     sub     rsp, 8
     mov     rbp, r15
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    je      .ext_find
     call    fat_find_dir
+    jmp     .found_dir
+.ext_find:
+    call    ext_find_dir
+.found_dir:
     add     rsp, 8
     pop     rbp
     test    rax, rax
@@ -254,7 +277,13 @@ resolve_path:
     push    rbp
     sub     rsp, 8
     mov     rbp, r15
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    je      .ext_root
     call    fat_validate_root
+    jmp     .root_validated
+.ext_root:
+    call    ext_root
+.root_validated:
     add     rsp, 8
     pop     rbp
     test    rax, rax
@@ -325,18 +354,18 @@ find_mount_name:
     push    r12
     push    r13
     mov     r12, rdi
-    lea     rbx, [rel fat_mounts]
-    mov     r13d, FAT_MOUNT_COUNT
+    lea     rbx, [rel mounts]
+    mov     r13d, VOLUME_MOUNT_COUNT
 .next:
-    cmp     byte [rbx + fat_volume.mounted], 0
+    cmp     byte [rbx + mount_volume.mounted], 0
     je      .advance
     mov     rdi, r12
-    lea     rsi, [rbx + fat_volume.name]
+    lea     rsi, [rbx + mount_volume.name]
     call    str_eq
     test    eax, eax
     jnz     .found
 .advance:
-    add     rbx, fat_volume_size
+    add     rbx, mount_volume_size
     dec     r13d
     jnz     .next
     xor     ebx, ebx
@@ -347,21 +376,55 @@ find_mount_name:
     pop     rbx
     ret
 
+; rbp = unpublished mount record, rdi = partition number string.
+; Store the validated GPT bounds and return zero or a console error.
+vfs_mount_partition:
+    push    rbx
+    call    parse_lba
+    jc      .partition
+    cmp     rax, 128
+    ja      .partition
+    mov     ebx, eax
+    call    gpt_load
+    test    rax, rax
+    jnz     .done
+    mov     edi, ebx
+    call    gpt_partition
+    test    rax, rax
+    jz      .partition
+    mov     rdi, rax
+    mov     rsi, rdx
+    mov     edx, [rbp + mount_volume.device]
+    call    vfs_mount_overlap
+    test    eax, eax
+    jnz     .overlap
+    mov     [rbp + mount_volume.volume_base], rdi
+    mov     [rbp + mount_volume.partition_last], rsi
+.done:
+    pop     rbx
+    ret
+.partition:
+    lea     rax, [rel missing_partition]
+    jmp     .done
+.overlap:
+    lea     rax, [rel overlapping_mount]
+    jmp     .done
+
 ; rdi = proposed first LBA, rsi = last LBA, edx = device.
 vfs_mount_overlap:
-    lea     rcx, [rel fat_mounts]
-    mov     r8d, FAT_MOUNT_COUNT
+    lea     rcx, [rel mounts]
+    mov     r8d, VOLUME_MOUNT_COUNT
 .next:
-    cmp     byte [rcx + fat_volume.mounted], 0
+    cmp     byte [rcx + mount_volume.mounted], 0
     je      .advance
-    cmp     edx, [rcx + fat_volume.device]
+    cmp     edx, [rcx + mount_volume.device]
     jne     .advance
-    cmp     rdi, [rcx + fat_volume.partition_last]
+    cmp     rdi, [rcx + mount_volume.partition_last]
     ja      .advance
-    cmp     rsi, [rcx + fat_volume.volume_base]
+    cmp     rsi, [rcx + mount_volume.volume_base]
     jae     .overlap
 .advance:
-    add     rcx, fat_volume_size
+    add     rcx, mount_volume_size
     dec     r8d
     jnz     .next
     xor     eax, eax
@@ -376,17 +439,17 @@ list_mounts:
     sub     rsp, 8
     lea     rdi, [rel ram_path]
     call    print_line
-    lea     rbx, [rel fat_mounts]
-    mov     r12d, FAT_MOUNT_COUNT
+    lea     rbx, [rel mounts]
+    mov     r12d, VOLUME_MOUNT_COUNT
 .next:
-    cmp     byte [rbx + fat_volume.mounted], 0
+    cmp     byte [rbx + mount_volume.mounted], 0
     je      .advance
     mov     edi, '/'
     call    console_putc
-    lea     rdi, [rbx + fat_volume.name]
+    lea     rdi, [rbx + mount_volume.name]
     call    print_line
 .advance:
-    add     rbx, fat_volume_size
+    add     rbx, mount_volume_size
     dec     r12d
     jnz     .next
     add     rsp, 8
@@ -397,6 +460,16 @@ list_mounts:
 command_mount:
     cmp     byte [rdi], 0
     je      list_mounts
+    xor     edx, edx
+    cmp     word [rdi], '-t'
+    jne     .device
+    cmp     dword [rdi + 2], ' ext'
+    jne     mount_usage
+    cmp     word [rdi + 6], '2 '
+    jne     mount_usage
+    add     rdi, 8
+    mov     edx, FS_EXT2
+.device:
     cmp     dword [rdi], 'disk'
     jne     mount_usage
     cmp     word [rdi + 4], '0p'
@@ -422,6 +495,8 @@ command_mount:
     push    rbp
     push    r12
     push    r13
+    sub     rsp, 16
+    mov     [rsp], dl
     mov     r12, rdi
     mov     r13, rsi
     xor     ecx, ecx
@@ -429,7 +504,7 @@ command_mount:
     mov     al, [r13 + rcx]
     test    al, al
     jz      .end_name
-    cmp     ecx, FAT_MOUNT_NAME_SIZE - 1
+    cmp     ecx, VOLUME_MOUNT_NAME_SIZE - 1
     jae     .usage
     cmp     al, '_'
     je      .next_byte
@@ -459,27 +534,40 @@ command_mount:
     call    find_mount_name
     test    rax, rax
     jnz     .occupied
-    lea     rbp, [rel fat_mounts]
-    mov     ecx, FAT_MOUNT_COUNT
+    lea     rbp, [rel mounts]
+    mov     ecx, VOLUME_MOUNT_COUNT
 .slot:
-    cmp     byte [rbp + fat_volume.mounted], 0
+    cmp     byte [rbp + mount_volume.mounted], 0
     je      .open
-    add     rbp, fat_volume_size
+    add     rbp, mount_volume_size
     dec     ecx
     jnz     .slot
     lea     rax, [rel mount_full]
     jmp     .error
 .open:
-    lea     rdi, [rbp + fat_volume.name]
+    lea     rdi, [rbp + mount_volume.name]
     mov     rsi, r13
 .copy:
     lodsb
     stosb
     test    al, al
     jnz     .copy
-    mov     dword [rbp + fat_volume.device], 0
+    mov     dword [rbp + mount_volume.device], 0
+    mov     al, [rsp]
+    mov     [rbp + mount_volume.type], al
     mov     rdi, r12
+    cmp     al, FS_EXT2
+    je      .ext_mount
     call    fat_mount
+    jmp     .mounted
+.ext_mount:
+    call    ext_mount
+    test    rax, rax
+    jnz     .error
+    lea     rdi, [rel ext_mounted]
+    call    console_write_cstr
+.mounted:
+    add     rsp, 16
     pop     r13
     pop     r12
     pop     rbp
@@ -490,6 +578,7 @@ command_mount:
 .occupied:
     lea     rax, [rel mount_taken]
 .error:
+    add     rsp, 16
     pop     r13
     pop     r12
     pop     rbp
@@ -512,7 +601,7 @@ select_volume:
     jz      .end
     cmp     al, '/'
     je      .tail
-    cmp     ecx, FAT_MOUNT_NAME_SIZE - 1
+    cmp     ecx, VOLUME_MOUNT_NAME_SIZE - 1
     jae     .bad
     mov     [rsi + rcx], al
     inc     ecx
@@ -545,11 +634,17 @@ command_umount:
     lea     rdx, [rel current_path + path_state.levels]
     cmp     rax, [rdx + rcx + location.volume]
     je      .busy
+    cmp     byte [rax + mount_volume.type], FS_EXT2
+    je      .ext
     push    rbp
     mov     rbp, rax
     call    fat_unmount
     pop     rbp
     ret
+.ext:
+    mov     byte [rax + mount_volume.mounted], 0
+    lea     rdi, [rel ext_unmounted]
+    jmp     console_write_cstr
 .busy:
     lea     rdi, [rel mount_in_use]
     jmp     console_write_cstr
@@ -563,6 +658,8 @@ command_umount:
     call    %2
     test    rax, rax
     jz      .missing
+    cmp     byte [rax + mount_volume.type], FS_EXT2
+    je      .ext
     mov     rbp, rax
     mov     rdi, r12
     xor     esi, esi
@@ -576,10 +673,24 @@ command_umount:
     pop     r12
     pop     rbp
     jmp     mount_missing
+.ext:
+    add     rsp, 8
+    pop     r12
+    pop     rbp
+%ifidn %1, disk_repair_volume
+    jmp     ext_readonly
+%else
+    lea     rdi, [rel ext_check]
+    jmp     console_write_cstr
+%endif
 %endmacro
 
 disk_wrapper disk_check_volume, select_volume, fat_check
 disk_wrapper disk_repair_volume, select_volume, fat_repair
+
+ext_readonly:
+    lea     rdi, [rel ext_readonly_text]
+    jmp     console_write_cstr
 
 print_line:
     sub     rsp, 8
@@ -618,25 +729,33 @@ cd_help:        db "Usage: cd PATH", 10, 0
 cat_help:       db "Usage: cat FILE", 10, 0
 rm_help:        db "Usage: rm FILE", 10, 0
 touch_help:     db "Usage: touch PATH", 10, 0
-mount_help:     db "Usage: mount [disk0pN /NAME] or umount /NAME", 10, 0
+mount_help:     db "Usage: mount [[-t ext2] disk0pN /NAME] or umount /NAME", 10, 0
 mount_taken:    db "Mount point is already in use.", 10, 0
-mount_full:     db "No free FAT32 mount slots.", 10, 0
+mount_full:     db "No free volume mount slots.", 10, 0
 mount_in_use:   db "Current directory is on this volume. Change directory first.", 10, 0
 no_fat_mount:   db "No FAT32 volume mounted.", 10, 0
+missing_partition: db "Invalid or missing GPT partition.", 10, 0
+overlapping_mount: db "Partition overlaps an active mount.", 10, 0
 path_missing:   db "Directory not found.", 10, 0
 path_directory: db "Expected a file path, found a directory.", 10, 0
 path_long:      db "Path is too long or has too many components.", 10, 0
 
+ext_mounted: db "Ext2 mounted read-only.", 10, 0
+ext_unmounted: db "Ext2 unmounted.", 10, 0
+ext_readonly_text: db "Ext2 is read-only.", 10, 0
+ext_check: db "disk check requires a FAT32 volume.", 10, 0
+
 align 8
-cat_handlers: dq ramfs_cat, fat_cat
-rm_handlers:  dq ramfs_rm, fat_rm
-touch_handlers: dq ramfs_touch, fat_touch
+cat_handlers: dq ramfs_cat, fat_cat, ext_cat
+rm_handlers:  dq ramfs_rm, fat_rm, ext_readonly
+touch_handlers: dq ramfs_touch, fat_touch, ext_readonly
 
 section .bss
 alignb 8
-fat_mounts:   resb FAT_MOUNT_COUNT * fat_volume_size
+mounts:   resb VOLUME_MOUNT_COUNT * mount_volume_size
 current_path: resb path_state_size   ; The zeroed state represents / at boot.
 work_path:    resb path_state_size
 component:    resb LINE_BUF_SIZE
 
 %include "vfs_copy.inc"
+%include "vfs_read.inc"

@@ -50,11 +50,14 @@ extern console_write
 extern console_write_cstr
 extern format_hex_raw
 extern write_u64
+extern ip_command, ip_info, ip_mode, ip_usage
 
 section .text
 global command_net
 global net_frame_receive
 global net_frame_send
+global net_init, net_mac, net_rx_poll, net_tx_submit, net_tx_complete
+global net_rx_boundary, net_rx_recycle
 
 command_net:
     push    rbx
@@ -71,7 +74,9 @@ command_net:
     test    eax, eax
     jnz     .receive
     cmp     dword [rbx], 'send'
-    jne     .usage
+    jne     .ip_command
+    cmp     byte [rel ip_mode], 0
+    jne     .raw_only
     cmp     byte [rbx + 4], ' '
     jne     .usage
     lea     rdi, [rbx + 5]
@@ -117,6 +122,15 @@ command_net:
     lea     rdi, [rel bytes_label]
     jmp     .print
 
+.ip_command:
+    mov     rdi, rbx
+    pop     r13
+    pop     r12
+    pop     rbx
+    jmp     ip_command
+.raw_only:
+    lea     rdi, [rel raw_only]
+    jmp     .print
 .info:
     call    net_init
     test    rax, rax
@@ -131,10 +145,15 @@ command_net:
     mov     rax, [rel nic_mmio]
     lea     rdi, [rel link_up]
     test    dword [rax + REG_STATUS], 2
-    jnz     .print
+    jnz     .print_info
     lea     rdi, [rel link_down]
-    jmp     .print
+.print_info:
+    call    console_write_cstr
+    call    ip_info
+    jmp     .done
 .receive:
+    cmp     byte [rel ip_mode], 0
+    jne     .raw_only
     lea     rdi, [rel console_frame]
     mov     esi, FRAME_HDR + PAYLOAD_MAX
     call    net_frame_receive
@@ -166,7 +185,7 @@ command_net:
     call    console_write_cstr
     jmp     .done
 .usage:
-    lea     rdi, [rel net_usage]
+    lea     rdi, [rel ip_usage]
     jmp     .print
 .large_payload:
     lea     rdi, [rel too_large]
@@ -336,6 +355,7 @@ net_init:
     jz      .allocation_error
     dec     r14d
     mov     rdi, [r12 + r14 * 8]
+    mov     qword [r12 + r14 * 8], 0
     call    page_free
     jmp     .no_pages
 .allocation_error:
@@ -400,7 +420,12 @@ wait_descriptor:
 
 ; rdi = caller buffer, rsi = capacity. Return error string in rax or
 ; zero with frame length in edx. DMA buffers stay private to the driver.
+net_rx_poll:
+    xor     edx, edx
+    jmp     receive_frame
 net_frame_receive:
+    mov     edx, 1
+receive_frame:
     push    rbx
     push    r12
     push    r13
@@ -408,6 +433,7 @@ net_frame_receive:
     push    r15
     mov     r13, rdi
     mov     r14, rsi
+    mov     r15d, edx
     call    require_link
     test    rax, rax
     jnz     .done
@@ -416,8 +442,16 @@ net_frame_receive:
     shl     ebx, 4
     add     rbx, [rel dma_pages]
     lea     rdi, [rbx + 12]
+    test    r15d, r15d
+    jz      .poll
     call    wait_descriptor
     jc      .timeout
+    jmp     .ready
+.poll:
+    test    byte [rdi], 1
+    jz      .empty
+.ready:
+    xor     r15d, r15d
     test    byte [rbx + 12], 2         ; EOP
     jz      .invalid
     cmp     byte [rbx + 13], 0         ; Errors
@@ -450,6 +484,10 @@ net_frame_receive:
     mov     [rel rx_next], r12d
     mov     edx, r15d
     jmp     .done
+.empty:
+    xor     edx, edx
+    xor     eax, eax
+    jmp     .done
 .timeout:
     lea     rax, [rel rx_timeout]
 .done:
@@ -464,6 +502,44 @@ net_frame_receive:
 ; Return error string or zero with the padded byte count in edx.
 net_frame_send:
     push    rbx
+    call    net_tx_submit
+    test    rax, rax
+    jnz     .done
+    mov     ebx, edx
+    mov     rdi, [rel tx_pending]
+    add     rdi, 12
+    call    wait_descriptor
+    jc      .timeout
+    call    net_tx_complete
+    mov     edx, ebx
+.done:
+    pop     rbx
+    ret
+.timeout:
+    lea     rax, [rel tx_timeout]
+    jmp     .done
+
+net_tx_complete:
+    mov     rcx, [rel tx_pending]
+    xor     eax, eax
+    test    rcx, rcx
+    jz      .done
+    mov     dl, [rcx + 12]
+    test    dl, 1
+    jz      .busy
+    mov     qword [rel tx_pending], 0
+    mfence
+    test    dl, 0x0E
+    jz      .done
+    lea     rax, [rel tx_error]
+.done:
+    ret
+.busy:
+    lea     rax, [rel tx_busy]
+    ret
+
+net_tx_submit:
+    push    rbx
     push    r12
     push    r13
     cmp     rsi, FRAME_HDR
@@ -475,13 +551,9 @@ net_frame_send:
     call    require_link
     test    rax, rax
     jnz     .done
-    mov     rbx, [rel tx_pending]
-    test    rbx, rbx
-    jz      .stage
-    test    byte [rbx + 12], 1
-    jz      .busy
-    mfence
-.stage:
+    call    net_tx_complete
+    cmp     qword [rel tx_pending], 0
+    jne     .done
     mov     rsi, r12
     mov     r12, [rel dma_pages + 5 * 8]
     mov     rdi, r12
@@ -511,26 +583,11 @@ net_frame_send:
     mfence
     mov     rdx, [rel nic_mmio]
     mov     [rdx + REG_TDT], eax
-    lea     rdi, [rbx + 12]
-    call    wait_descriptor
-    jc      .timeout
-    mov     qword [rel tx_pending], 0
-    test    byte [rbx + 12], 0x0E     ; Error flags
-    jnz     .error
     mov     edx, r13d
     xor     eax, eax
     jmp     .done
 .invalid:
     lea     rax, [rel invalid_tx_size]
-    jmp     .done
-.busy:
-    lea     rax, [rel tx_busy]
-    jmp     .done
-.timeout:
-    lea     rax, [rel tx_timeout]
-    jmp     .done
-.error:
-    lea     rax, [rel tx_error]
 .done:
     pop     r13
     pop     r12
@@ -673,10 +730,54 @@ print_bdf:
     add     rsp, 24
     ret
 
+; Snapshot completed descriptors without returning ownership to the NIC.
+net_rx_boundary:
+    xor     eax, eax
+    cmp     qword [rel nic_mmio], 0
+    je      .done
+    mov     rdx, [rel dma_pages]
+    mov     ecx, [rel rx_next]
+.next:
+    mov     esi, ecx
+    shl     esi, 4
+    test    byte [rdx + rsi + 12], 1
+    jz      .done
+    inc     eax
+    inc     ecx
+    and     ecx, DESC_COUNT - 1
+    cmp     eax, DESC_COUNT
+    jb      .next
+.done:
+    ret
+
+; edi = count from net_rx_boundary. No dispatch during this operation.
+net_rx_recycle:
+    test    edi, edi
+    jz      .done
+    mov     r8, [rel nic_mmio]
+    test    r8, r8
+    jz      .done
+    mov     rdx, [rel dma_pages]
+    mov     ecx, [rel rx_next]
+.next:
+    mov     eax, ecx
+    shl     eax, 4
+    mov     qword [rdx + rax + 8], 0
+    mov     esi, ecx
+    inc     ecx
+    and     ecx, DESC_COUNT - 1
+    dec     edi
+    jnz     .next
+    mov     [rel rx_next], ecx
+    mfence
+    mov     [r8 + REG_RDT], esi
+.done:
+    ret
+
 section .rodata
+raw_only:        db "Raw Ethernet commands require net off.", 10, 0
 info_arg:        db "info", 0
 recv_arg:        db "recv", 0
-net_usage:       db "Usage: net info | net recv | net send DEST TYPE FILE", 10, 0
 no_nic:          db "QEMU e1000 NIC unavailable.", 10, 0
 unsupported_bar: db "e1000 BAR0 is outside supported uncached MMIO.", 10, 0
 bad_mac:         db "e1000 has no valid station address.", 10, 0
@@ -708,6 +809,7 @@ nic_mmio:    resq 1
 dma_pages:   resq PAGES
 tx_pending:  resq 1
 destination: resq 1
+net_mac:
 nic_mac:     resb 6
 ether_type:  resw 1
 nic_bdf:     resd 1

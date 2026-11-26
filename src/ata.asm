@@ -37,6 +37,7 @@ extern pci_walk
 extern pci_config_read32
 extern pci_config_write16
 extern timer_ns
+extern ip_checkpoint, ip_checkpoint_at
 
 section .text
 global block_init
@@ -209,6 +210,7 @@ block_transfer:
     mov     rbx, rdi
     mov     r12, rsi
     mov     r14d, edx
+    call    ip_checkpoint
     mov     r13d, ATA_READ
     mov     al, ATA_MASTER_LBA
     cmp     byte [rel ata_lba48], 0
@@ -285,6 +287,7 @@ block_flush:
     cmp     byte [rel flush_cmd], 0
     je      flush_unsupported
     sub     rsp, 8
+    call    ip_checkpoint
     xor     edi, edi
     xor     esi, esi
     call    ata_wait
@@ -384,6 +387,7 @@ ata_wait:
     call    timer_ns
     cmp     rax, rbx
     jae     .timeout
+    call    ip_checkpoint_at
     pause
     jmp     .poll
 .ready:

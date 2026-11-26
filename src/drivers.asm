@@ -35,6 +35,8 @@ global console_putc
 global console_clear
 global console_input_init
 global console_input_irq
+global net_timer, net_timer_irq
+extern ip_service, ip_checkpoint
 global console_readline
 global ps2_try_getc
 global pit_delay_us
@@ -130,14 +132,26 @@ serial_init:
 serial_putc:
     mov     r8b, al
     mov     dx, COM1_LSR
-.wait:
     in      al, dx
     test    al, 0x20                    ; THRE (Transmit Holding Register Empty)
     jz      .wait
+.send:
     mov     dx, COM1_PORT
     mov     al, r8b
     out     dx, al
     ret
+.wait:
+    push    rbx
+    mov     bl, r8b
+.poll:
+    call    ip_checkpoint
+    mov     dx, COM1_LSR
+    in      al, dx
+    test    al, 0x20
+    jz      .poll
+    mov     r8b, bl
+    pop     rbx
+    jmp     .send
 
 ; int32 serial_try_getc(void) -> eax = byte (0..255) or -1 if empty
 serial_try_getc:
@@ -198,18 +212,19 @@ vga_set_color:
     ret
 
 console_clear:
-    sub     rsp, 8
+    push    rbx
     mov     edi, VGA_ATTR_GREY
     call    vga_clear
-    lea     rsi, [rel serial_clear]
+    lea     rbx, [rel serial_clear]
 .next:
-    lodsb
+    mov     al, [rbx]
     test    al, al
     jz      .done
+    inc     rbx
     call    serial_putc
     jmp     .next
 .done:
-    add     rsp, 8
+    pop     rbx
     ret
 
 ; Internal: update hardware VGA cursor via CRTC 0x3D4/0x3D5
@@ -572,6 +587,7 @@ vga_putc_utf8:
 console_putc:
     push    rbx
     mov     bl, dil
+    call    ip_checkpoint
     mov     al, bl
     call    serial_putc
     movzx   edi, bl
@@ -598,6 +614,9 @@ console_write:
     pop     rdi
     call    vga_putc_utf8
     inc     rbx
+    test    bl, 63
+    jnz     .lp
+    call    ip_checkpoint
     jmp     .lp
 .done:
     call    vga_update_cursor
@@ -619,6 +638,9 @@ console_write_cstr:
     pop     rdi
     call    vga_putc_utf8
     inc     rbx
+    test    bl, 63
+    jnz     .lp
+    call    ip_checkpoint
     jmp     .lp
 .done:
     call    vga_update_cursor
@@ -754,6 +776,29 @@ console_input_irq:
     pop     rax
     iretq
 
+; edi = nonzero to enable networking's 50 Hz wakeup.
+net_timer:
+    in      al, PIC_MASTER_DATA
+    or      al, 1
+    test    edi, edi
+    jz      .mask
+    push    rax
+    mov     al, 0x34                   ; Channel 0, periodic mode, low/high.
+    out     0x43, al
+    mov     ax, 23864
+    out     0x40, al
+    mov     al, ah
+    out     0x40, al
+    pop     rax
+    and     al, 0xFE
+.mask:
+    out     PIC_MASTER_DATA, al
+    ret
+
+; The interrupt wakes HLT. Foreground code owns packet processing.
+net_timer_irq:
+    jmp     console_input_irq
+
 ; int64 console_readline(char *buf in rdi, uint64 max_len in rsi)
 ; Returns length >= 0 (NUL-terminated), -1 on Ctrl-D, or LINE_TOO_LONG
 ; after consuming an overlong line through its terminator.
@@ -767,6 +812,7 @@ console_readline:
     xor     ebx, ebx                    ; len = 0
 
 .poll:
+    call    ip_service
     call    serial_try_getc
     cmp     eax, -1
     jne     .got_char

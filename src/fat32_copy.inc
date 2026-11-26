@@ -19,7 +19,7 @@ fat_copy_open:
     jnz     .directory
     mov     edi, [rel slot_cluster]
     mov     esi, [rel slot_size]
-    call    check_chain
+    call    check_copy_chain
     test    rax, rax
     jnz     .done
     mov     [rel copy_volume], rbp
@@ -31,10 +31,6 @@ fat_copy_open:
     xor     eax, eax
     test    edx, edx
     jz      .done
-    mov     edi, [rel slot_cluster]
-    call    validate_directory_chain
-    test    rax, rax
-    jnz     .done
     mov     edi, [rel slot_cluster]
     call    copy_start_cluster
     mov     edx, [rel slot_size]
@@ -52,6 +48,46 @@ fat_copy_open:
     lea     rax, [rel name_is_directory]
     jmp     .done
 
+; rdi = zero-based sector within the file. Seek once from the open cursor,
+; before any data is read or any FAT mutation takes place.
+fat_copy_seek:
+    push    rbp
+    push    r12
+    push    r13
+    mov     rbp, [rel copy_volume]
+    mov     rax, rdi
+    xor     edx, edx
+    div     dword [rbp + mount_volume.sectors_per_cluster]
+    mov     r12, rax
+    mov     r13d, edx
+    mov     edi, [rel copy_cluster]
+.walk:
+    test    r12, r12
+    jz      .position
+    call    cached_fat_link
+    test    rax, rax
+    jnz     .done
+    cmp     edx, 2
+    jb      .invalid
+    cmp     edx, [rbp + mount_volume.last_cluster]
+    ja      .invalid
+    mov     edi, edx
+    dec     r12
+    jmp     .walk
+.position:
+    call    copy_start_cluster
+    add     [rel copy_next_sector], r13
+    sub     [rel copy_sectors_left], r13d
+    xor     eax, eax
+.done:
+    pop     r13
+    pop     r12
+    pop     rbp
+    ret
+.invalid:
+    lea     rax, [rel invalid_chain]
+    jmp     .done
+
 ; rdi = sector-sized destination. The caller supplies the byte count.
 fat_copy_chunk:
     push    rbx
@@ -67,7 +103,7 @@ fat_copy_chunk:
     jnz     .done
     cmp     edx, 2
     jb      .invalid
-    cmp     edx, [rbp + fat_volume.last_cluster]
+    cmp     edx, [rbp + mount_volume.last_cluster]
     ja      .invalid
     mov     edi, edx
     call    copy_start_cluster
@@ -93,7 +129,7 @@ copy_start_cluster:
     mov     [rel copy_cluster], edi
     call    cluster_lba
     mov     [rel copy_next_sector], rax
-    mov     eax, [rbp + fat_volume.sectors_per_cluster]
+    mov     eax, [rbp + mount_volume.sectors_per_cluster]
     mov     [rel copy_sectors_left], eax
     add     rsp, 8
     ret

@@ -29,11 +29,11 @@ fat_repair:
 fat_check:
     xor     edi, edi
 check_volume:
-    cmp     byte [rbp + fat_volume.mounted], 0
+    cmp     byte [rbp + mount_volume.mounted], 0
     je      print_unmounted
     test    edi, edi
     jz      .start
-    cmp     byte [rbp + fat_volume.write_error], 0
+    cmp     byte [rbp + mount_volume.write_error], 0
     jne     print_write_blocked
 .start:
     push    rbx
@@ -64,7 +64,7 @@ check_volume:
     call    block_flush
     test    rax, rax
     jnz     .write_error
-    mov     byte [rbp + fat_volume.pending_write], 0
+    mov     byte [rbp + mount_volume.pending_write], 0
 
 .report:
     lea     rdi, [rel orphan_report]
@@ -79,7 +79,7 @@ check_volume:
     xor     eax, eax
     jmp     .finish
 .write_error:
-    mov     byte [rbp + fat_volume.write_error], 1
+    mov     byte [rbp + mount_volume.write_error], 1
 .finish:
     mov     r12, rax
     call    check_free_bitmap
@@ -108,7 +108,7 @@ check_reachable_tree:
     test    rax, rax
     jnz     .done
     mov     dword [rel cached_fat_lba], -1
-    mov     edi, [rbp + fat_volume.root_cluster]
+    mov     edi, [rbp + mount_volume.root_cluster]
     xor     esi, esi
     jmp     check_directory
 .done:
@@ -118,7 +118,7 @@ check_alloc_bitmap:
     push    rbx
     push    r12
     sub     rsp, 8
-    mov     eax, [rbp + fat_volume.last_cluster]
+    mov     eax, [rbp + mount_volume.last_cluster]
     shr     eax, FAT_BITMAP_SHIFT
     inc     eax
     cmp     rax, [rel pages_free]
@@ -183,7 +183,7 @@ check_mark_chain:
 .cluster:
     cmp     ebx, 2
     jb      .invalid
-    cmp     ebx, [rbp + fat_volume.last_cluster]
+    cmp     ebx, [rbp + mount_volume.last_cluster]
     ja      .invalid
     mov     edi, ebx
     call    check_cluster_bit
@@ -232,7 +232,7 @@ check_directory:
     mov     edi, r12d
     call    cluster_lba
     mov     r14, rax
-    mov     r15d, [rbp + fat_volume.sectors_per_cluster]
+    mov     r15d, [rbp + mount_volume.sectors_per_cluster]
 .sector:
     mov     rdi, r14
     mov     rsi, rsp
@@ -263,7 +263,7 @@ check_directory:
     xor     esi, esi
     jmp     .file
 .sized_file:
-    mov     ecx, [rbp + fat_volume.sectors_per_cluster]
+    mov     ecx, [rbp + mount_volume.sectors_per_cluster]
     shl     ecx, 9
     dec     eax
     xor     edx, edx
@@ -312,7 +312,7 @@ check_directory:
     test    edi, edi                  ; A parent of zero denotes the root.
     jnz     .invalid
     mov     eax, [rsp + BLOCK_SIZE]
-    cmp     eax, [rbp + fat_volume.root_cluster]
+    cmp     eax, [rbp + mount_volume.root_cluster]
     je      .advance
     jmp     .invalid
 .self:
@@ -426,8 +426,8 @@ check_fat_table:
     sub     rsp, 16
     mov     [rsp + 4], edi
     xor     ebx, ebx                  ; Cluster number (including FAT padding).
-    mov     r12d, [rbp + fat_volume.reserved_sectors]
-    mov     r14d, [rbp + fat_volume.sectors_per_fat]
+    mov     r12d, [rbp + mount_volume.reserved_sectors]
+    mov     r14d, [rbp + mount_volume.sectors_per_fat]
 .sector:
     mov     edi, r12d
     call    read_fat_pair
@@ -439,7 +439,7 @@ check_fat_table:
 .entry:
     mov     edx, [r13 + r15]
     and     edx, FAT_LINK_MASK
-    cmp     dword [rbp + fat_volume.fat_copies], 2
+    cmp     dword [rbp + mount_volume.fat_copies], 2
     jne     .classify
     mov     eax, [r13 + r15 + BLOCK_SIZE]
     and     eax, FAT_LINK_MASK
@@ -448,7 +448,7 @@ check_fat_table:
 .classify:
     cmp     rbx, 2
     jb      .next
-    mov     eax, [rbp + fat_volume.last_cluster]
+    mov     eax, [rbp + mount_volume.last_cluster]
     cmp     rbx, rax
     ja      .next
     test    edx, edx
@@ -486,10 +486,10 @@ check_fat_table:
     call    write_sector_from
     test    rax, rax
     jnz     .done
-    cmp     dword [rbp + fat_volume.fat_copies], 2
+    cmp     dword [rbp + mount_volume.fat_copies], 2
     jne     .advance
     mov     edi, r12d
-    add     edi, [rbp + fat_volume.sectors_per_fat]
+    add     edi, [rbp + mount_volume.sectors_per_fat]
     lea     rsi, [r13 + BLOCK_SIZE]
     call    write_sector_from
     test    rax, rax

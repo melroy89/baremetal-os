@@ -4,15 +4,16 @@ For direct QEMU boot, add `-machine pc -drive file=disk.raw,format=raw,if=ide,in
 
 ## Disk commands
 
-| Command                 | Action                                             |
-| ----------------------- | -------------------------------------------------- |
-| `disk info`             | Show the ATA model and disk capacity.              |
-| `disk crc32 LBA`        | Checksum one sector by its zero-based decimal LBA. |
-| `disk gpt`              | List partitions and identify the GPT copy in use.  |
-| `disk check [PATH]`     | Count orphaned clusters without writing.           |
-| `disk repair [PATH]`    | Reclaim clusters proven to be unreferenced.        |
-| `mount [disk0pN /NAME]` | List mounts or mount GPT partition `N` at `/NAME`. |
-| `umount /NAME`          | Flush and unmount a named volume.                  |
+| Command                       | Action                                             |
+| ----------------------------- | -------------------------------------------------- |
+| `disk info`                   | Show the ATA model and disk capacity.              |
+| `disk crc32 LBA`              | Checksum one sector by its zero-based decimal LBA. |
+| `disk gpt`                    | List partitions and identify the GPT copy in use.  |
+| `disk check [PATH]`           | Count orphaned clusters without writing.           |
+| `disk repair [PATH]`          | Reclaim clusters proven to be unreferenced.        |
+| `mount [disk0pN /NAME]`       | List mounts or mount GPT partition `N` at `/NAME`. |
+| `mount -t ext2 disk0pN /NAME` | Mount a GPT partition as read-only ext2.           |
+| `umount /NAME`                | Flush and unmount a named volume.                  |
 
 ## FAT32 example
 
@@ -32,3 +33,16 @@ umount /disk
 ```
 
 GPT partition numbers start at 1. Use `mount disk0p2 /backup` for a second partition on the same disk. `disk check` and `disk repair` default to `/disk`. To select another volume, pass its mount point, such as `/backup` or `/backup/`.
+
+## Read-only ext2
+
+Mount a clean ext2 volume with 4 KiB blocks at any free top-level mount point. Lookup is case-sensitive. Indexed directories are unsupported. Use `cat` to print a file, `cp` to copy it into RAM or FAT32, and `crc32range` to check a byte range.
+
+```text
+mount -t ext2 disk0p2 /ext
+ls /ext
+crc32range 4294967296 4096 /ext/large.bin
+umount /ext
+```
+
+Run `make test-ext2` for the read-only and large-file checks. Run `make bench-ext2` on a KVM host to measure sequential reads.

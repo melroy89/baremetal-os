@@ -31,7 +31,8 @@ extern console_write_cstr
 extern write_u64
 extern apic_wait_icr
 extern apic_send_ipi
-extern crc32_buffer
+extern crc32_buffer, crc32_foreground
+extern ip_checkpoint_at
 
 section .text
 
@@ -331,6 +332,7 @@ smp_crc32:
     call    timer_ns
     cmp     rax, r14
     jae     .fallback
+    call    ip_checkpoint_at
     pause
     jmp     .wait
 
@@ -345,7 +347,7 @@ smp_crc32:
 .local:
     mov     rdi, r12
     mov     rsi, r13
-    call    crc32_buffer
+    call    crc32_foreground
     jmp     .done
 .result:
     mov     eax, [rel crc_job_result]
