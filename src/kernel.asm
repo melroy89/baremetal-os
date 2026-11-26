@@ -359,7 +359,7 @@ milliseconds_text: db " ms", 10, 0
 poweroff_text:     db "Powering off...", 10, 0
 reboot_text:       db "Rebooting...", 10, 0
 reboot_failed:     db "Reboot failed.", 10, 0
-version_text:      db "Bare Metal OS 1.2.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
+version_text:      db "Bare Metal OS 1.3.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
 log_text:          db "Boot log", 10, 0
 event_multiboot:   db "Multiboot handoff accepted.", 10, 0
 event_timer:       db "Timer initialized.", 10, 0
