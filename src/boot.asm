@@ -86,7 +86,7 @@ _start:
     xor     ecx, ecx                    ; entry index = 0..2047
 .fill_pd:
     mov     eax, ebx
-    cmp     ecx, 2032
+    cmp     ecx, HIGH_MMIO_BASE >> 21
     jae     .mmio_flags
     or      eax, 0x83
     jmp     .store_pde

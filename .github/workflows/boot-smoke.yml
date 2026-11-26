@@ -30,5 +30,8 @@ jobs:
       - name: Build the kernel and hybrid ISO
         run: make -j"$(nproc)" os-check os-iso
 
+      - name: Test physical page allocation
+        run: make test-pages
+
       - name: Boot the ELF and ISO in QEMU
         run: bash tests/boot_smoke.sh

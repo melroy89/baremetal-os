@@ -98,6 +98,7 @@ For **OVMF (UEFI)**, disable Secure Boot, leave **Pre-Enroll keys** unchecked if
 | `help`    | List commands                                                       |
 | `info`    | Show the number of CPUs started and the usable RAM reported at boot |
 | `cpu`     | Show the boot CPU vendor, model, and capabilities                   |
+| `mem`     | Show how many 4 KiB pages the kernel manages, uses, and has free    |
 | `memmap`  | Show the memory ranges and types reported by Multiboot              |
 | `uptime`  | Show time since boot in milliseconds                                |
 | `log`     | Replay milestones from the current boot                             |

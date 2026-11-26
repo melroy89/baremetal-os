@@ -24,6 +24,9 @@ extern timer_ns
 extern smp_init
 extern memory_usable_bytes
 extern memory_map_print
+extern page_init
+extern pages_managed
+extern pages_free
 extern str_eq
 extern write_u64
 extern qemu_shutdown
@@ -44,6 +47,8 @@ kernel_main:
     jne     .bad_boot
     lea     rdi, [rel event_multiboot]
     call    record_boot_event
+    mov     edi, [rel g_mb_info]
+    call    page_init
     call    timer_init
     lea     rdi, [rel event_timer]
     call    record_boot_event
@@ -167,6 +172,25 @@ command_memmap:
     mov     edi, [rel g_mb_info]
     jmp     memory_map_print
 
+command_mem:
+    sub     rsp, 8
+    lea     rdi, [rel pages_text]
+    call    console_write_cstr
+    mov     rdi, [rel pages_managed]
+    call    write_u64
+    lea     rdi, [rel pages_managed_text]
+    call    console_write_cstr
+    mov     rdi, [rel pages_managed]
+    sub     rdi, [rel pages_free]
+    call    write_u64
+    lea     rdi, [rel pages_used_text]
+    call    console_write_cstr
+    mov     rdi, [rel pages_free]
+    call    write_u64
+    lea     rdi, [rel pages_free_text]
+    add     rsp, 8
+    jmp     console_write_cstr
+
 command_version:
     lea     rdi, [rel version_text]
     jmp     console_write_cstr
@@ -241,6 +265,7 @@ bad_boot:          db "Invalid Multiboot bootloader magic.", 10, 0
 help_text:         db "help    Show console commands", 10
                    db "info    Show CPU and usable memory information", 10
                    db "cpu     Show boot CPU capabilities and processors started", 10
+                   db "mem     Show pages managed, used and free by the kernel", 10
                    db "memmap  Show the Multiboot memory map", 10
                    db "uptime  Show time since boot", 10
                    db "log     Show boot milestones", 10
@@ -252,6 +277,10 @@ info_text:         db "Architecture: x86-64", 10, 0
 cpu_count_text:    db "CPUs started: ", 0
 memory_text:       db "Usable memory: ", 0
 mib_text:          db " MiB", 10, 0
+pages_text:        db "4 KiB pages: ", 0
+pages_managed_text: db " managed, ", 0
+pages_used_text:   db " used, ", 0
+pages_free_text:   db " free", 10, 0
 uptime_text:       db "Uptime: ", 0
 milliseconds_text: db " ms", 10, 0
 poweroff_text:     db "Powering off...", 10, 0
@@ -267,6 +296,7 @@ event_console:     db "Console input ready.", 10, 0
 help_name:         db "help", 0
 info_name:         db "info", 0
 cpu_name:          db "cpu", 0
+mem_name:          db "mem", 0
 memmap_name:       db "memmap", 0
 uptime_name:       db "uptime", 0
 log_name:          db "log", 0
@@ -282,6 +312,7 @@ commands:
     dq help_name, command_help
     dq info_name, command_info
     dq cpu_name, command_cpu
+    dq mem_name, command_mem
     dq memmap_name, command_memmap
     dq uptime_name, command_uptime
     dq log_name, command_log

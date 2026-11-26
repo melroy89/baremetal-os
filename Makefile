@@ -5,12 +5,12 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o drivers.o kernel.o runtime.o smp.o)
+OBJECTS := $(addprefix $(BUILD)/,boot.o cpu.o drivers.o kernel.o pages.o runtime.o smp.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 RAM     ?= 64M
 SMP     ?= 1
 
-.PHONY: all os os-check os-run os-iso clean
+.PHONY: all os os-check os-run os-iso test-pages clean
 
 all: os
 
@@ -38,6 +38,16 @@ $(KERNEL): $(BUILD)/baremetal-os.elf64
 os-check: $(KERNEL)
 	grub-file --is-x86-multiboot $(KERNEL)
 	readelf -l $(KERNEL)
+
+$(BUILD)/test_pages.o: tests/page_allocator.asm src/os_constants.inc | $(BUILD)
+	$(NASM) -f elf64 -Isrc/ $< -o $@
+
+$(BUILD)/test_pages: $(BUILD)/test_pages.o $(BUILD)/pages.o $(BUILD)/runtime.o
+	$(LD) -m elf_x86_64 -z noexecstack --defsym=_kernel_start=0x100000 \
+		--defsym=_kernel_end=0x102000 $^ -o $@
+
+test-pages: $(BUILD)/test_pages
+	./$(BUILD)/test_pages
 
 os-run: $(KERNEL)
 	$(QEMU) -enable-kvm -cpu host -m $(RAM) -smp $(SMP) -nic none \

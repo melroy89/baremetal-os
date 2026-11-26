@@ -11,6 +11,7 @@ extern console_putc
 section .text
 global memory_usable_bytes
 global memory_map_print
+global memory_map_walk
 global str_eq
 global write_u64
 global write_hex64_raw
@@ -36,7 +37,7 @@ memory_map_walk:
     test    r13, r13
     jz      .malformed
     add     r13, r12
-    mov     rax, 1 << 32
+    mov     rax, PHYS_MAP_END
     cmp     r13, rax
     ja      .malformed
 
@@ -50,6 +51,9 @@ memory_map_walk:
     lea     rbx, [r12 + rax + 4]
     cmp     rbx, r13
     ja      .malformed
+    mov     rax, [r12 + 4]
+    add     rax, [r12 + 12]
+    jc      .malformed
 
     mov     rdi, r12
     mov     rsi, r15

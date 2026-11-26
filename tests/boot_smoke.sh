@@ -19,6 +19,16 @@ expect_serial() {
     return 1
 }
 
+check_memory() {
+    printf 'mem\r' >&"$serial_write"
+    expect_serial '4 KiB pages: ([1-9][0-9]*) managed, 0 used, ([1-9][0-9]*) free'$'\r?\n'
+    if [[ ${BASH_REMATCH[1]} != "${BASH_REMATCH[2]}" ]]; then
+        printf 'Expected all managed pages to be free after boot\n' >&2
+        return 1
+    fi
+    expect_serial 'baremetal> '
+}
+
 check_console() {
     expect_serial 'Bare Metal OS \| x86-64'
     expect_serial 'baremetal> '
@@ -31,6 +41,8 @@ check_console() {
     printf 'info\r' >&"$serial_write"
     expect_serial "CPUs started: $cpus/$cpus"$'\r?\n'
     expect_serial 'baremetal> '
+
+    check_memory
 }
 
 cleanup_guest() {

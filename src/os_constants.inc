@@ -13,8 +13,17 @@
 %define MBI_FLAGS           0
 %define MBI_MEM_LOWER       4
 %define MBI_MEM_UPPER       8
+%define MBI_MODS_COUNT      20
+%define MBI_MODS_ADDR       24
 %define MBI_MMAP_LENGTH     44
 %define MBI_MMAP_ADDR       48
+%define MBI_SIZE            116
+%define MB_MODULE_SIZE      16
+
+%define PHYS_MAP_END        (1 << 32)
+%define HIGH_MMIO_BASE       0xFE000000
+%define PAGE_SHIFT          12
+%define PAGE_SIZE           (1 << PAGE_SHIFT)
 
 ; --- Serial COM1 (0x3F8, 115200 8N1) ---
 %define COM1_PORT           0x3F8
