@@ -85,8 +85,8 @@ printf 'header' | dd of="$files/Input" conv=notrunc status=none
 printf x | dd of="$files/Input" bs=1 seek=274432 conv=notrunc status=none
 
 truncate -s 16M "$files/small.img"
-small_mkfs=(-q -F -t ext2 -b 1024 -I 128 -O none)
-# e2fsprogs 1.47.2 moved revision selection from -r to -E.
+small_mkfs=(-q -F -t ext2 -b 1024 -I 128)
+# Revision 0 clears the feature flags. e2fsprogs 1.47.2 rejects -O with it.
 if ! mke2fs "${small_mkfs[@]}" -E revision=0 "$files/small.img" 2>"$files/mkfs.log"; then
     mke2fs "${small_mkfs[@]}" -r 0 "$files/small.img" || { cat "$files/mkfs.log" >&2; exit 1; }
 fi
