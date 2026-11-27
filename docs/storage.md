@@ -44,7 +44,7 @@ cat /ext/note.txt
 umount /ext
 ```
 
-**Compatibility.** Ext2 supports 1, 2, and 4 KiB blocks and 128- or 256-byte inodes. Writable features include `filetype`, `sparse_super`, `large_file`, `resize_inode`, `ext_attr`, and `dir_index`. Editing an indexed directory converts it to linear records. Existing extended attributes are preserved. Linux handles ACLs.
+**Supported ext2 formats and features.** Bare Metal OS supports ext2 volumes with 1, 2, or 4 KiB blocks and 128- or 256-byte inodes. Writable features include `filetype`, `sparse_super`, `large_file`, `resize_inode`, `ext_attr`, and `dir_index`. Editing an indexed directory converts it to linear records. Existing extended attributes are preserved. Linux handles ACLs.
 
 **Files and paths.** `cp` streams large files and preserves holes between ext2 volumes at the destination block size. Writes beyond 2 GiB − 1 require `large_file`. Names are case-sensitive. `mv` works within one volume. Leave a directory tree before moving it. File replacement, cross-directory moves, and link-count changes use the guest’s UTC hardware clock. See [console commands](console.md) for links, `stat`, and `truncate`.
 
