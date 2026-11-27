@@ -13,17 +13,17 @@ For direct QEMU boot with `-machine pc`, add one of these drives. Use `format=qc
 
 ## Disk commands
 
-| Command                                 | Action                                                     |
-| --------------------------------------- | ---------------------------------------------------------- |
-| `disk info [diskN]`                     | Show the disk model and capacity.                          |
-| `disk crc32 [diskN] LBA`                | Checksum one sector by its zero-based decimal LBA.          |
-| `disk gpt [diskN]`                      | List partitions and identify the GPT copy in use.          |
-| `disk check [PATH]`                     | Count orphaned FAT32 clusters.                             |
-| `disk repair [PATH]`                    | Reclaim unreferenced FAT32 clusters.                       |
-| `mount`                                 | List mounted volumes.                                      |
-| `mount [-o ro] diskNpM /NAME`          | Mount FAT32 GPT partition `M` of disk `N`.                  |
-| `mount -t ext2 [-o ro] diskNpM /NAME`  | Mount a supported ext2 partition.                           |
-| `umount /NAME`                          | Flush and unmount a named volume.                           |
+| Command                               | Action                                             |
+| ------------------------------------- | -------------------------------------------------- |
+| `disk info [diskN]`                   | Show the disk model and capacity.                  |
+| `disk crc32 [diskN] LBA`              | Checksum one sector by its zero-based decimal LBA. |
+| `disk gpt [diskN]`                    | List partitions and identify the GPT copy in use.  |
+| `disk check [PATH]`                   | Count orphaned FAT32 clusters.                     |
+| `disk repair [PATH]`                  | Reclaim unreferenced FAT32 clusters.               |
+| `mount`                               | List mounted volumes.                              |
+| `mount [-o ro] diskNpM /NAME`         | Mount FAT32 GPT partition `M` of disk `N`.         |
+| `mount -t ext2 [-o ro] diskNpM /NAME` | Mount a supported ext2 partition.                  |
+| `umount /NAME`                        | Flush and unmount a named volume.                  |
 
 Use `-o ro` to mount read-only. Writable mounts require a device that can flush writes. Use `mv SOURCE DEST` to rename a regular file within one directory when the destination is unused. The new ext2 name must fit in the original record and sector. FAT32 rename accepts short names in directories without live long-name records.
 
