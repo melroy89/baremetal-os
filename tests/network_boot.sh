@@ -68,9 +68,29 @@ check_network() {
     wait "$peer" 2>/dev/null || true
 }
 
+check_irq() {
+    local peer wire_in wire_out frame
+    expect_serial 'baremetal> '
+    start_wire
+    console_check 'net static 192.0.2.10/24' 'IPv4: static'
+    if [[ $fixture == net-irq ]]; then
+        console_check 'net info' 'RX wakeup: PCI interrupt'
+    else
+        console_check 'net info' 'RX wakeup: polling'
+    fi
+    for _ in 1 2 3; do
+        sleep 0.1
+        icmp_packet 08 "$peer_ip" 12345678a1b2c3
+        wire_receive
+        assert_icmp_frame "$frame" "$guest_ip" "$peer_ip" 00
+    done
+    kill "$peer" 2>/dev/null || true
+    wait "$peer" 2>/dev/null || true
+}
+
 suite=${2:-all}
 case $suite in
-    all|e1000|virtio|dhcp-e1000|dhcp-virtio) ;;
+    all|e1000|virtio|dhcp-e1000|dhcp-virtio|irq) ;;
     *) printf 'Unknown network test suite: %s\n' "$suite" >&2; exit 2 ;;
 esac
 
@@ -95,11 +115,21 @@ run_adapter() {
     if [[ $check == check_dhcp ]]; then
         run_guest "$driver DHCP renewal, rebinding, expiry, and conflict" 1 64M check_dhcp -cpu max \
             -kernel "$build_dir/network-fixture.elf" "${stream[@]}"
+    elif [[ $check == check_irq ]]; then
+        run_guest "$driver $fixture RX wakeup" 1 64M check_irq -cpu max \
+            -kernel "$build_dir/$fixture.elf" "${stream[@]}"
     else
         run_guest "$driver Ethernet, IPv4, ARP, ICMP and DNS" 1 128M check_network -cpu max -kernel "$kernel" \
             -initrd "$files/network.tar" "${stream[@]}"
     fi
 }
+
+if [[ $suite == irq ]]; then
+    fixture=net-irq run_adapter e1000 check_irq
+    fixture=net-irq run_adapter virtio check_irq
+    fixture=net-poll run_adapter e1000 check_irq
+    exit
+fi
 
 if [[ $suite == dhcp-* ]]; then
     run_adapter "${suite#dhcp-}" check_dhcp

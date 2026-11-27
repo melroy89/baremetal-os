@@ -2,6 +2,7 @@
 bits 64
 default rel
 
+%include "os_constants.inc"
 %define PCI_CONFIG_ADDRESS 0xCF8
 %define PCI_CONFIG_DATA    0xCFC
 %define PCI_CONFIG_ENABLE  (1 << 31)
@@ -307,3 +308,102 @@ pci_entry:       db "00:"
 .device_id:      db "0000  "
 .class:          db "000000", 10
 pci_entry_len equ $ - pci_entry
+
+section .text
+global pci_memory_bar
+; edi = BDF, esi = BAR index. Size a memory BAR with PCI decoding off.
+; Return address in rax and size in rdx, or zero in rax.
+pci_memory_bar:
+    mov     r10d, edi
+    mov     edi, esi
+    cmp     edi, 5
+    ja      .invalid
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    lea     ebx, [16 + rdi * 4]
+    mov     esi, ebx
+    call    .read_cfg
+    mov     r12d, eax
+    test    al, 1
+    jnz     .bad
+    and     eax, 6
+    xor     r13d, r13d
+    test    eax, eax
+    jz      .probe
+    cmp     eax, 4
+    jne     .bad
+    cmp     ebx, 16 + 20
+    je      .bad
+    lea     esi, [rbx + 4]
+    call    .read_cfg
+    test    eax, eax                  ; Current kernel maps only below 4 GiB.
+    jnz     .bad
+    mov     r13d, 1
+.probe:
+    mov     esi, ebx
+    mov     edx, -1
+    call    .write_cfg
+    test    r13d, r13d
+    jz      .read_mask
+    lea     esi, [rbx + 4]
+    mov     edx, -1
+    call    .write_cfg
+.read_mask:
+    mov     esi, ebx
+    call    .read_cfg
+    mov     r14d, eax
+    mov     r15d, -1
+    test    r13d, r13d
+    jz      .restore
+    lea     esi, [rbx + 4]
+    call    .read_cfg
+    mov     r15d, eax
+    lea     esi, [rbx + 4]
+    xor     edx, edx
+    call    .write_cfg
+.restore:
+    mov     esi, ebx
+    mov     edx, r12d
+    call    .write_cfg
+    and     r14d, -16
+    and     r12d, -16
+    mov     eax, HIGH_MMIO_BASE
+    cmp     r12, rax
+    jb      .bad
+    shl     r15, 32
+    or      r14, r15
+    neg     r14
+    jz      .bad
+    lea     rax, [r14 - 1]
+    test    rax, r14
+    jnz     .bad
+    test    rax, r12
+    jnz     .bad
+    lea     rax, [r12 + r14 - 1]
+    shr     rax, 32
+    jnz     .bad
+    mov     rax, r12
+    mov     rdx, r14
+    jmp     .done
+.bad:
+    xor     eax, eax
+.done:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+.invalid:
+    xor     eax, eax
+    ret
+
+.read_cfg:
+    mov     edi, r10d
+    jmp     pci_config_read32
+.write_cfg:
+    mov     edi, r10d
+    jmp     pci_config_write32

@@ -7,7 +7,6 @@ default rel
 %define VIRTIO_NET_ID 0x1041
 %define VIRTIO_NET_TRANSITIONAL 0x1000
 %define PCI_CMD 4
-%define PCI_BAR0 16
 %define PCI_INTX_DISABLE (1 << 10)
 %define PCI_MEM_MASTER 6
 
@@ -21,30 +20,13 @@ default rel
 %define ETH_PAD 60
 %define ETH_MAX 1514
 %define DMA_PAGES (2 + VQ_COUNT)
-%define RESET_NS 100000000
 %define VNET_MAC (1 << 5)
 %define VNET_STATUS (1 << 16)
 
-struc vpci
-    .feature_select: resd 1
-    .features: resd 1
-    .driver_select: resd 1
-    .driver_features: resd 1
-    .msix: resw 1
-    .num_queues: resw 1
-    .status: resb 1
-    .generation: resb 1
-    .queue_select: resw 1
-    .queue_size: resw 1
-    .queue_msix: resw 1
-    .queue_enable: resw 1
-    .queue_notify: resw 1
-    .desc: resq 1
-    .avail: resq 1
-    .used: resq 1
-endstruc
+%include "virtio_pci.inc"
 
-extern pci_walk, pci_config_read32, pci_config_write16, pci_config_write32
+extern pci_memory_bar, virtio_reset
+extern pci_walk, pci_config_read32, pci_config_write16
 extern page_alloc, page_free, timer_ns
 extern net_mac, nic_bdf, tx_busy, invalid_frame, invalid_tx_size, link_down_error
 %ifdef TEST_VIRTIO_TX
@@ -54,6 +36,8 @@ extern fixture_hold_tx
 global virtio_init, virtio_shutdown, virtio_link
 global virtio_rx_poll, virtio_rx_boundary, virtio_rx_recycle
 global virtio_tx_submit, virtio_tx_complete
+global virtio_irq_mask, virtio_irq_arm
+extern net_irq_disable
 
 section .text
 find_device:
@@ -223,7 +207,7 @@ init_device:
     or      edx, 2 | PCI_INTX_DISABLE
     call    set_command
     mov     rdi, r12
-    call    reset_device
+    call    virtio_reset
     test    eax, eax
     jnz     .rollback
     mov     byte [r12 + vpci.status], 3
@@ -319,7 +303,7 @@ init_device:
 .failed:
     mov     byte [r12 + vpci.status], 0x80
     mov     rdi, r12
-    call    reset_device
+    call    virtio_reset
 .rollback:
     movzx   edx, word [rel saved_command]
     and     edx, ~4
@@ -394,127 +378,19 @@ configure_queue:
     mov     eax, 1
     ret
 
-; Size a memory BAR with PCI decoding off. Return address and size.
 read_bar:
-    cmp     edi, 5
-    ja      .invalid
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    lea     ebx, [PCI_BAR0 + rdi * 4]
-    mov     esi, ebx
-    call    read_cfg
-    mov     r12d, eax
-    test    al, 1
-    jnz     .bad
-    and     eax, 6
-    xor     r13d, r13d
-    test    eax, eax
-    jz      .probe
-    cmp     eax, 4
-    jne     .bad
-    cmp     ebx, PCI_BAR0 + 20
-    je      .bad
-    lea     esi, [rbx + 4]
-    call    read_cfg
-    test    eax, eax                  ; Current kernel maps only below 4 GiB.
-    jnz     .bad
-    mov     r13d, 1
-.probe:
-    mov     esi, ebx
-    mov     edx, -1
-    call    write_cfg
-    test    r13d, r13d
-    jz      .read_mask
-    lea     esi, [rbx + 4]
-    mov     edx, -1
-    call    write_cfg
-.read_mask:
-    mov     esi, ebx
-    call    read_cfg
-    mov     r14d, eax
-    mov     r15d, -1
-    test    r13d, r13d
-    jz      .restore
-    lea     esi, [rbx + 4]
-    call    read_cfg
-    mov     r15d, eax
-    lea     esi, [rbx + 4]
-    xor     edx, edx
-    call    write_cfg
-.restore:
-    mov     esi, ebx
-    mov     edx, r12d
-    call    write_cfg
-    and     r14d, -16
-    and     r12d, -16
-    mov     eax, HIGH_MMIO_BASE
-    cmp     r12, rax
-    jb      .bad
-    shl     r15, 32
-    or      r14, r15
-    neg     r14
-    jz      .bad
-    lea     rax, [r14 - 1]
-    test    rax, r14
-    jnz     .bad
-    test    rax, r12
-    jnz     .bad
-    lea     rax, [r12 + r14 - 1]
-    shr     rax, 32
-    jnz     .bad
-    mov     rax, r12
-    mov     rdx, r14
-    jmp     .done
-.bad:
-    xor     eax, eax
-.done:
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-.invalid:
-    xor     eax, eax
-    ret
+    mov     esi, edi
+    mov     edi, [rel nic_bdf]
+    jmp     pci_memory_bar
 
 read_cfg:
     mov     edi, [rel nic_bdf]
     jmp     pci_config_read32
-write_cfg:
-    mov     edi, [rel nic_bdf]
-    jmp     pci_config_write32
 set_command:
     mov     edi, [rel nic_bdf]
     mov     esi, PCI_CMD
     jmp     pci_config_write16
 
-reset_device:
-    push    rbx
-    push    r12
-    sub     rsp, 8
-    mov     rbx, rdi
-    mov     byte [rbx + vpci.status], 0
-    call    timer_ns
-    lea     r12, [rax + RESET_NS]
-.wait:
-    cmp     byte [rbx + vpci.status], 0
-    je      .ready
-    call    timer_ns
-    cmp     rax, r12
-    jb      .wait
-    mov     eax, 1
-    jmp     .done
-.ready:
-    xor     eax, eax
-.done:
-    add     rsp, 8
-    pop     r12
-    pop     rbx
-    ret
 
 free_pages:
     push    rbx
@@ -537,13 +413,33 @@ free_pages:
     pop     rbx
     ret
 
+virtio_irq_mask:
+    mov     rax, [rel dma_pages]
+    test    rax, rax
+    jz      .done
+    mov     word [rax + VQ_AVAIL], 1
+    mfence
+    mov     rax, [rel isr_base]
+    mov     al, [rax]
+.done:
+    ret
+
+virtio_irq_arm:
+    mov     rax, [rel dma_pages]
+    test    rax, rax
+    jz      .done
+    mov     word [rax + VQ_AVAIL], 0
+.done:
+    ret
+
 virtio_shutdown:
     cmp     byte [rel active], 0
     je      .done
     sub     rsp, 8
+    call    net_irq_disable
     mov     byte [rel active], 0
     mov     rdi, [rel config]
-    call    reset_device
+    call    virtio_reset
     movzx   edx, word [rel saved_command]
     and     edx, ~4
     call    set_command

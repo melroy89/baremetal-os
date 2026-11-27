@@ -22,7 +22,7 @@ default rel
 %define MODE_DHCP 2
 
 extern net_init, net_mac, net_rx_poll, net_tx_submit, net_tx_complete
-extern net_rx_boundary, net_rx_recycle, net_timer
+extern net_rx_boundary, net_rx_recycle, net_timer, net_irq_enable, net_irq_disable
 extern timer_ns, console_write_cstr, console_putc, write_u64, str_eq
 
 global ip_mode, ip_command, ip_service, ip_info, command_ping, ip_usage
@@ -134,6 +134,7 @@ ip_static:
 ip_handover:
     push    rbx
     mov     ebx, edi
+    call    net_irq_disable
     call    net_rx_boundary
     push    rax
     sub     rsp, 8
@@ -144,6 +145,10 @@ ip_handover:
     call    net_rx_recycle
     mov     [rel ip_mode], bl
     mov     qword [rel ip_pressure_until], 0
+    test    ebx, ebx
+    jz      .timer
+    call    net_irq_enable
+.timer:
     xor     esi, esi
     mov     edi, ebx
     call    net_timer

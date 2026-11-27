@@ -2,7 +2,7 @@
 
 Type `help` at the `baremetal>` prompt for the full command list.
 
-At the VGA prompt, use **Page Up** and **Page Down** to browse up to 256 previous rows. Typing returns to the live screen, and `clear` discards the VGA history. On serial, use the host terminal's scrollback.
+At the VGA prompt, use **Page Up** and **Page Down** to browse up to 256 previous rows. Typing returns to the live screen, and `clear` discards the VGA history. On serial, use the host terminal's scrollback. Use **Up** and **Down** to recall the last 16 commands on either console. Recall redraws the editable command at a fresh prompt.
 
 ## System and session
 
@@ -23,9 +23,9 @@ At the VGA prompt, use **Page Up** and **Page Down** to browse up to 256 previou
 | `reboot`               | Restart the guest.                                            |
 | `halt`, `quit`, `exit` | Power off the guest.                                          |
 
-## IDE storage
+## Disk storage
 
-Use `disk info` to inspect the disk and `disk gpt` to list its partitions. Use `mount disk0pN /disk` for FAT32 or `mount -t ext2 disk0pN /ext` for ext2. Replace `N` with the GPT partition number.
+Use `disk info` to inspect the disk and `disk gpt` to list its partitions. Use `mount disk0pN /disk` for FAT32 or `mount -t ext2 disk0pN /ext` for ext2. Replace `N` with the GPT partition number. Use `disk1` for modern virtio-blk.
 
 See the [storage guide](storage.md) for mount options and disk commands.
 
@@ -50,6 +50,7 @@ The console starts at `/`. Use `ls` there to see mounted volumes, or `cd /ram` t
 | `cp SOURCE DEST`                | Copy a file between or within mounted volumes.              |
 | `touch PATH`                    | Create an empty file. Existing files stay unchanged.        |
 | `mkdir PATH`                    | Create one directory on a writable FAT32 or ext2 volume.    |
+| `mv SOURCE DEST`                | Rename a regular file within the same disk directory.      |
 | `rm PATH`                       | Remove a file or an empty directory.                        |
 | `crc32 FILE`                    | Checksum a file in `/ram` from anywhere.                    |
 | `crc32range OFFSET LENGTH PATH` | Checksum up to 64 MiB of a file using decimal byte offsets. |
@@ -64,7 +65,7 @@ rm comparison.txt
 
 Double quotes let you include a literal `>` in the text. Files in `/ram` disappear on reboot.
 
-For `cp`, put paths containing spaces in double quotes. Inside quotes, use `\"` for a literal double quote and `\\` for a literal backslash.
+For `cp` and `mv`, put paths containing spaces in double quotes. Inside quotes, use `\"` for a literal double quote and `\\` for a literal backslash.
 
 ### Optional boot archive
 

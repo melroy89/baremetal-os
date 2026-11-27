@@ -40,16 +40,24 @@ extern timer_ns
 extern ip_checkpoint, ip_checkpoint_at
 
 section .text
-global block_init
-global block_read
-global block_write
-global block_flush
-global block_count
-global block_model
+global ata_init
+global ata_read
+global ata_write
+global ata_flush
+global ata_count
+global ata_model
+
+global ata_writable
+
+ata_writable:
+    xor     eax, eax
+    cmp     byte [rel flush_cmd], 0
+    setne   al
+    ret
 
 ; Return zero on success or a console error string in rax.
-block_init:
-    cmp     qword [rel block_count], 0
+ata_init:
+    cmp     qword [rel ata_count], 0
     jne     .ready
     push    rbx
     lea     rdi, [rel find_ide]
@@ -131,7 +139,7 @@ block_init:
 .capacity:
     test    rax, rax
     jz      .unsupported
-    mov     [rel block_count], rax
+    mov     [rel ata_count], rax
     movzx   ecx, word [rbx + 83 * 2]
     and     ecx, 0xC000
     cmp     ecx, 0x4000
@@ -147,7 +155,7 @@ block_init:
 .model:
 
     lea     rsi, [rbx + 27 * 2]
-    lea     rdi, [rel block_model]
+    lea     rdi, [rel ata_model]
     mov     ecx, 20                    ; Model is 20 byte-swapped words.
 .model_word:
     lodsw
@@ -156,7 +164,7 @@ block_init:
     loop    .model_word
     mov     byte [rdi], 0
 .trim_model:
-    lea     rax, [rel block_model]
+    lea     rax, [rel ata_model]
     cmp     rdi, rax
     je      .identified
     cmp     byte [rdi - 1], ' '
@@ -189,18 +197,18 @@ find_ide:
     ret
 
 ; rdi = LBA, rsi = destination for one logical block. Return zero or error.
-block_read:
+ata_read:
     xor     edx, edx
     jmp     block_transfer
 
-block_write:
+ata_write:
     cmp     byte [rel flush_cmd], 0
     je      flush_unsupported
     mov     edx, 1
 
 ; rdi = LBA, rsi = buffer, edx != 0 for writes.
 block_transfer:
-    cmp     rdi, [rel block_count]
+    cmp     rdi, [rel ata_count]
     jae     .range
     push    rbx
     push    r12
@@ -283,7 +291,7 @@ block_transfer:
     lea     rax, [rel out_of_range]
     ret
 
-block_flush:
+ata_flush:
     cmp     byte [rel flush_cmd], 0
     je      flush_unsupported
     sub     rsp, 8
@@ -418,10 +426,10 @@ no_flush:        db "ATA disk lacks cache flush support.", 10, 0
 
 section .bss
 alignb 8
-block_count:   resq 1
+ata_count:   resq 1
 ide_bdf:       resd 1
 ata_lba48:     resb 1
 flush_cmd:     resb 1
-block_model:   resb 41
+ata_model:   resb 41
 alignb 2
 identify_data: resb BLOCK_SIZE

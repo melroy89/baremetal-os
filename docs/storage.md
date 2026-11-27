@@ -1,20 +1,31 @@
-# IDE storage
+# Disk storage
 
-For direct QEMU boot, add `-machine pc -drive file=disk.raw,format=raw,if=ide,index=0`. For QCOW2, set `format=qcow2`. The driver uses the PIIX3 primary master and 512-byte sectors.
+`disk0` is the PIIX3 primary master. `disk1` is the first usable modern virtio-blk device, even when it is the only disk. Both drivers use 512-byte logical sectors. Disk inspection commands default to the first available disk.
+
+For direct QEMU boot with `-machine pc`, add one of these drives. Use `format=qcow2` for a QCOW2 image.
+
+```sh
+# IDE
+-drive file=disk.raw,if=ide,index=0,format=raw
+# Modern virtio-blk
+-drive file=disk.raw,if=none,id=vd,format=raw -device virtio-blk-pci,drive=vd,disable-legacy=on
+```
 
 ## Disk commands
 
-| Command                             | Action                                               |
-| ----------------------------------- | ---------------------------------------------------- |
-| `disk info`                         | Show the ATA model and disk capacity.                |
-| `disk crc32 LBA`                    | Checksum one sector by its zero-based decimal LBA.   |
-| `disk gpt`                          | List partitions and identify the GPT copy in use.    |
-| `disk check [PATH]`                 | Count orphaned FAT32 clusters without writing.       |
-| `disk repair [PATH]`                | Reclaim unreferenced FAT32 clusters.                 |
-| `mount [disk0pN /NAME]`             | List mounts or mount FAT32 partition `N` at `/NAME`. |
-| `mount -t ext2 disk0pN /NAME`       | Mount a supported clean ext2 partition read-write.   |
-| `mount -t ext2 -o ro disk0pN /NAME` | Mount a supported ext2 partition read-only.          |
-| `umount /NAME`                      | Flush and unmount a named volume.                    |
+| Command                                 | Action                                                     |
+| --------------------------------------- | ---------------------------------------------------------- |
+| `disk info [diskN]`                     | Show the disk model and capacity.                          |
+| `disk crc32 [diskN] LBA`                | Checksum one sector by its zero-based decimal LBA.          |
+| `disk gpt [diskN]`                      | List partitions and identify the GPT copy in use.          |
+| `disk check [PATH]`                     | Count orphaned FAT32 clusters.                             |
+| `disk repair [PATH]`                    | Reclaim unreferenced FAT32 clusters.                       |
+| `mount`                                 | List mounted volumes.                                      |
+| `mount [-o ro] diskNpM /NAME`          | Mount FAT32 GPT partition `M` of disk `N`.                  |
+| `mount -t ext2 [-o ro] diskNpM /NAME`  | Mount a supported ext2 partition.                           |
+| `umount /NAME`                          | Flush and unmount a named volume.                           |
+
+Use `-o ro` to mount read-only. Writable mounts require a device that can flush writes. Use `mv SOURCE DEST` to rename a regular file within one directory when the destination is unused. The new ext2 name must fit in the original record and sector. FAT32 rename accepts short names in directories without live long-name records.
 
 ## Ext2
 

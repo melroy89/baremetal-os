@@ -11,6 +11,8 @@ default rel
 %define REG_STATUS  0x0008
 %define REG_IMC     0x00D8
 %define REG_ICR     0x00C0
+%define REG_IMS     0x00D0
+%define IRQ_RX      ((1 << 7) | (1 << 4))
 %define REG_RCTL    0x0100
 %define REG_TCTL    0x0400
 %define REG_TIPG    0x0410
@@ -54,6 +56,7 @@ extern ip_command, ip_info, ip_mode, ip_usage
 extern virtio_init, virtio_shutdown, virtio_link
 extern virtio_rx_poll, virtio_rx_boundary, virtio_rx_recycle
 extern virtio_tx_submit, virtio_tx_complete
+extern virtio_irq_mask, virtio_irq_arm
 
 section .text
 global command_net
@@ -62,6 +65,7 @@ global net_frame_send
 global net_init, net_mac, net_rx_poll, net_tx_submit, net_tx_complete
 global net_rx_boundary, net_rx_recycle, net_shutdown
 global nic_bdf, tx_busy, invalid_frame, invalid_tx_size, link_down_error
+global net_irq_line, net_irq_enable, net_irq_disable, net_irq_handler, net_irq_rearm
 
 command_net:
     push    rbx
@@ -158,6 +162,12 @@ command_net:
     jne     .driver
     lea     rdi, [rel virtio_driver]
 .driver:
+    call    console_write_cstr
+    lea     rdi, [rel irq_polling]
+    cmp     byte [rel net_irq_line], 0
+    je      .irq_mode
+    lea     rdi, [rel irq_active]
+.irq_mode:
     call    console_write_cstr
     call    net_tx_complete
     call    ip_info
@@ -273,6 +283,9 @@ net_link:
     ret
 
 net_shutdown:
+    sub     rsp, 8
+    call    net_irq_disable
+    add     rsp, 8
     cmp     byte [rel backend], 2
     je      virtio_shutdown
     mov     rax, [rel nic_mmio]
@@ -902,7 +915,116 @@ net_rx_recycle:
 .done:
     ret
 
+; Only claim the two level-triggered PCI routes used on our PC target.
+; The caller owns the boot CPU with interrupts disabled.
+net_irq_enable:
+    push    rbx
+    mov     edi, [rel nic_bdf]
+    mov     esi, 0x3c
+    call    pci_config_read32
+    test    ah, ah                    ; Interrupt pin zero means no INTx.
+    jz      .done
+    movzx   ebx, al
+    cmp     ebx, 10
+    jb      .done
+    cmp     ebx, 11
+    ja      .done
+    mov     ecx, ebx
+    sub     ecx, 8
+    mov     dx, 0x4d1                 ; Slave edge/level control register.
+    in      al, dx
+    bt      eax, ecx
+    jnc     .done
+    in      al, PIC_SLAVE_DATA
+    bt      eax, ecx
+    jnc     .done                     ; A live route belongs to someone else.
+    mov     [rel net_irq_line], bl
+    mov     edi, [rel nic_bdf]
+    mov     esi, PCI_CMD
+    call    pci_config_read32
+    movzx   edx, ax
+    and     edx, ~(1 << 10)
+    call    set_command
+    mov     ecx, ebx
+    sub     ecx, 8
+    in      al, PIC_SLAVE_DATA
+    btr     eax, ecx
+    out     PIC_SLAVE_DATA, al
+    in      al, PIC_MASTER_DATA
+    and     al, 0xfb
+    out     PIC_MASTER_DATA, al
+.done:
+    pop     rbx
+    ret
+
+net_irq_disable:
+    movzx   ecx, byte [rel net_irq_line]
+    test    ecx, ecx
+    jz      .done
+    sub     ecx, 8
+    in      al, PIC_SLAVE_DATA
+    bts     eax, ecx
+    out     PIC_SLAVE_DATA, al
+    mov     byte [rel net_irq_line], 0
+    mov     byte [rel net_irq_armed], 0
+    jmp     mask_nic_irq
+.done:
+    ret
+
+; Acknowledge and mask only. The prompt and checkpoints own the rings.
+net_irq_handler:
+    push    rax
+    push    rdx
+    cmp     byte [rel net_irq_line], 0
+    je      .eoi
+    mov     byte [rel net_irq_armed], 0
+    call    mask_nic_irq
+.eoi:
+    mov     al, PIC_EOI
+    out     PIC_SLAVE_CMD, al
+    out     PIC_MASTER_CMD, al
+    pop     rdx
+    pop     rax
+    iretq
+
+mask_nic_irq:
+    cmp     byte [rel backend], 2
+    je      virtio_irq_mask
+    mov     rax, [rel nic_mmio]
+    mov     dword [rax + REG_IMC], IRQ_RX
+    mov     eax, [rax + REG_ICR]
+    ret
+
+net_irq_rearm:
+    cmp     byte [rel net_irq_line], 0
+    je      .done
+    cmp     byte [rel net_irq_armed], 0
+    jne     .done
+    sub     rsp, 8
+    call    net_rx_boundary
+    test    eax, eax
+    jnz     .pending
+    mov     byte [rel net_irq_armed], 1
+    cmp     byte [rel backend], 2
+    jne     .e1000
+    call    virtio_irq_arm
+    jmp     .recheck
+.e1000:
+    mov     rax, [rel nic_mmio]
+    mov     dword [rax + REG_IMS], IRQ_RX
+.recheck:
+    mfence
+    call    net_rx_boundary
+.pending:
+    add     rsp, 8
+    ret
+.done:
+    xor     eax, eax
+    ret
+
 section .rodata
+irq_polling: db "RX wakeup: polling", 10, 0
+irq_active:  db "RX wakeup: PCI interrupt", 10, 0
 raw_only:        db "Raw Ethernet commands require net off.", 10, 0
 e1000_driver:    db "Driver: e1000", 10, 0
 virtio_driver:   db "Driver: virtio-net", 10, 0
@@ -948,3 +1070,6 @@ tx_next:     resd 1
 backend:     resb 1
 
 console_frame: resb FRAME_HDR + PAYLOAD_MAX
+
+net_irq_line: resb 1
+net_irq_armed: resb 1

@@ -30,6 +30,7 @@ extern ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
 extern ext_write, ext_copy_write, ext_touch, ext_mkdir, ext_rm, ext_finish, fat_finish
 extern console_write, parse_lba, crc32_update, write_hex32_raw
 extern gpt_load, gpt_partition
+extern block_selected, block_writable
 extern console_write_cstr, console_putc, str_eq
 
 section .text
@@ -446,9 +447,17 @@ vfs_mount_partition:
     cmp     rax, 128
     ja      .partition
     mov     ebx, eax
+    mov     eax, [rbp + mount_volume.device]
+    mov     [rel block_selected], eax
     call    gpt_load
     test    rax, rax
     jnz     .done
+    cmp     byte [rbp + mount_volume.read_only], 0
+    jne     .partition_info
+    call    block_writable
+    test    eax, eax
+    jz      .readonly_disk
+.partition_info:
     mov     edi, ebx
     call    gpt_partition
     test    rax, rax
@@ -466,6 +475,9 @@ vfs_mount_partition:
     ret
 .partition:
     lea     rax, [rel missing_partition]
+    jmp     .done
+.readonly_disk:
+    lea     rax, [rel disk_needs_ro]
     jmp     .done
 .overlap:
     lea     rax, [rel overlapping_mount]
@@ -523,13 +535,14 @@ command_mount:
     je      list_mounts
     xor     edx, edx
     cmp     word [rdi], '-t'
-    jne     .device
+    jne     .option
     cmp     dword [rdi + 2], ' ext'
     jne     mount_usage
     cmp     word [rdi + 6], '2 '
     jne     mount_usage
     add     rdi, 8
     mov     edx, FS_EXT2
+.option:
     cmp     dword [rdi], '-o r'
     jne     .device
     cmp     word [rdi + 4], 'o '
@@ -539,8 +552,14 @@ command_mount:
 .device:
     cmp     dword [rdi], 'disk'
     jne     mount_usage
-    cmp     word [rdi + 4], '0p'
+    cmp     byte [rdi + 5], 'p'
     jne     mount_usage
+    movzx   ecx, byte [rdi + 4]
+    sub     ecx, '0'
+    cmp     ecx, 1
+    ja      mount_usage
+    shl     ecx, 16
+    or      edx, ecx
     add     rdi, 6
     mov     rsi, rdi
 .partition:
@@ -563,7 +582,7 @@ command_mount:
     push    r12
     push    r13
     sub     rsp, 16
-    mov     [rsp], dx
+    mov     [rsp], edx
     mov     r12, rdi
     mov     r13, rsi
     xor     ecx, ecx
@@ -619,11 +638,12 @@ command_mount:
     stosb
     test    al, al
     jnz     .copy
-    mov     dword [rbp + mount_volume.device], 0
+    movzx   eax, byte [rsp + 2]
+    mov     [rbp + mount_volume.device], eax
     mov     al, [rsp]
     mov     [rbp + mount_volume.type], al
     mov     al, [rsp + 1]
-    mov     [rbp + mount_volume.ext_readonly], al
+    mov     [rbp + mount_volume.read_only], al
     mov     rdi, r12
     cmp     byte [rbp + mount_volume.type], FS_EXT2
     je      .ext_mount
@@ -634,7 +654,7 @@ command_mount:
     test    rax, rax
     jnz     .error
     lea     rdi, [rel ext_mounted]
-    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
     jne     .ext_message
     lea     rdi, [rel ext_mounted_rw]
 .ext_message:
@@ -853,11 +873,12 @@ rm_help:        db "Usage: rm PATH", 10, 0
 touch_help:     db "Usage: touch PATH", 10, 0
 mkdir_help:     db "Usage: mkdir PATH", 10, 0
 mkdir_mount_required: db "mkdir requires a writable FAT32 or ext2 mount.", 10, 0
-mount_help:     db "Usage: mount [[-t ext2 [-o ro]] disk0pN /NAME] or umount /NAME", 10, 0
+mount_help:     db "Usage: mount [[-t ext2] [-o ro] diskNpM /NAME] or umount /NAME", 10, 0
 mount_taken:    db "Mount point is already in use.", 10, 0
 mount_full:     db "No free volume mount slots.", 10, 0
 mount_in_use:   db "Current directory is on this volume. Change directory first.", 10, 0
 no_fat_mount:   db "No FAT32 volume mounted.", 10, 0
+disk_needs_ro: db "Disk is read-only or lacks flush support. Use -o ro.", 10, 0
 missing_partition: db "Invalid or missing GPT partition.", 10, 0
 overlapping_mount: db "Partition overlaps an active mount.", 10, 0
 path_missing:   db "Directory not found.", 10, 0
@@ -886,3 +907,4 @@ component:    resb LINE_BUF_SIZE
 
 %include "vfs_copy.inc"
 %include "vfs_read.inc"
+%include "vfs_move.inc"

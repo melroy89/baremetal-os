@@ -9,7 +9,7 @@ ext_rm:
     push    r12
     sub     rsp, 8
     mov     r12d, edx
-    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
     jne     .readonly
     cmp     byte [rbp + mount_volume.write_error], 0
     jne     .blocked
@@ -104,7 +104,7 @@ ext_rm:
     call    rw_save_inode_sector
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .write_error
     call    rw_reclaim
@@ -167,7 +167,7 @@ rw_unpublish:
     call    rw_write_sector
     test    rax, rax
     jnz     .done
-    call    block_flush
+    call    ext_flush
 .done:
     pop     rbx
     ret
@@ -352,7 +352,7 @@ rw_reclaim:
     call    rw_release_records
     test    rax, rax
     jnz     .done
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .done
     mov     edi, 2
@@ -374,7 +374,7 @@ rw_reclaim:
     call    rw_adjust_super
     test    rax, rax
     jnz     .done
-    call    block_flush
+    call    ext_flush
 .done:
     add     rsp, 8
 .return:

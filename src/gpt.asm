@@ -11,7 +11,7 @@ default rel
 
 extern block_init
 extern block_read
-extern block_count
+extern block_capacity
 extern crc32_buffer
 extern crc32_update
 extern console_putc
@@ -76,7 +76,8 @@ gpt_load:
     call    block_init
     test    rax, rax
     jnz     .done
-    mov     rbx, [rel block_count]
+    call    block_capacity
+    mov     rbx, rax
     dec     rbx
     cmp     rbx, 3
     jb      .invalid
@@ -138,7 +139,8 @@ load_copy:
     cmp     [rbx + 24], r12
     jne     .bad
 
-    mov     r13, [rel block_count]
+    call    block_capacity
+    mov     r13, rax
     dec     r13
     mov     eax, 1
     cmp     r12, 1

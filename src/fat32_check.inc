@@ -33,6 +33,8 @@ check_volume:
     je      print_unmounted
     test    edi, edi
     jz      .start
+    cmp     byte [rbp + mount_volume.read_only], 0
+    jne     print_fat_readonly
     cmp     byte [rbp + mount_volume.write_error], 0
     jne     print_write_blocked
 .start:
@@ -61,7 +63,7 @@ check_volume:
     call    check_fat_table
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .write_error
     mov     byte [rbp + mount_volume.pending_write], 0

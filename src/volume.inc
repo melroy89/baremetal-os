@@ -23,7 +23,7 @@ struc mount_volume
     .write_error:         resb 1
     .name:                resb VOLUME_MOUNT_NAME_SIZE
     .type:                resb 1
-    .ext_readonly:        resb 1
+    .read_only:           resb 1
     alignb 4
     .ext_blocks:          resd 1
     .ext_inodes:          resd 1

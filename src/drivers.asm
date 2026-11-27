@@ -20,6 +20,8 @@ default rel
 %define VGA_RING_BYTES  ((VGA_HISTORY_ROWS + VGA_ROWS) * VGA_ROW_BYTES)
 %define KEY_PAGE_UP     0x100
 %define KEY_PAGE_DOWN   0x101
+%define KEY_HISTORY_UP  0x102
+%define KEY_HISTORY_DOWN 0x103
 
 section .text
 
@@ -37,6 +39,8 @@ global console_input_init
 global console_input_irq
 global net_timer, net_timer_irq
 extern ip_service, ip_checkpoint, net_rx_boundary
+extern net_irq_rearm, net_irq_line
+extern prompt
 global console_readline
 global ps2_try_getc
 global pit_delay_us
@@ -722,6 +726,10 @@ ps2_try_getc:
     je      .page_up
     cmp     al, 0x51
     je      .page_down
+    cmp     al, 0x48
+    je      .history_up
+    cmp     al, 0x50
+    je      .history_down
     cmp     al, 0x1C                    ; Keypad Enter
     je      .translate
     cmp     al, 0x35                    ; Keypad Divide
@@ -732,6 +740,12 @@ ps2_try_getc:
     ret
 .page_down:
     mov     eax, KEY_PAGE_DOWN
+    ret
+.history_up:
+    mov     eax, KEY_HISTORY_UP
+    ret
+.history_down:
+    mov     eax, KEY_HISTORY_DOWN
     ret
 .drain_none:
     in      al, PS2_DATA
@@ -787,7 +801,12 @@ net_timer:
     out     0x43, al
     mov     ax, 23864
     test    esi, esi
-    jz      .reload
+    jnz     .fast
+    cmp     byte [rel net_irq_line], 0
+    je      .reload
+    mov     ax, 59659                 ; 50 ms watchdog in interrupt mode.
+    jmp     .reload
+.fast:
     mov     ax, 5966
 .reload:
     out     0x40, al
@@ -818,13 +837,20 @@ console_readline:
     xor     ebx, ebx                    ; len = 0
 
     mov     r14d, 3                   ; Allow three extra batches per HLT.
+    mov     dword [rel history_age], 0
+    mov     byte [rel history_escape], 0
 
 .poll:
     call    ip_service
     mov     r15d, eax
     call    serial_try_getc
     cmp     eax, -1
-    jne     .got_char
+    je      .keyboard
+    call    history_serial_key
+    cmp     eax, -1
+    je      .poll
+    jmp     .got_char
+.keyboard:
     call    ps2_try_getc
     cmp     eax, -1
     jne     .got_char
@@ -835,13 +861,17 @@ console_readline:
     test    al, 1
     jnz     .poll
 .sleep:
+    call    net_irq_rearm
     test    r14d, r14d
     jz      .halt
+    test    eax, eax
+    jnz     .more_rx
     test    r15d, r15d
     jz      .halt
     call    net_rx_boundary
     test    eax, eax
     jz      .halt
+.more_rx:
     dec     r14d
     jmp     .poll
 .halt:
@@ -854,6 +884,10 @@ console_readline:
     jmp     .poll
 
 .got_char:
+    cmp     eax, KEY_HISTORY_UP
+    je      .history_up
+    cmp     eax, KEY_HISTORY_DOWN
+    je      .history_down
     cmp     eax, KEY_PAGE_UP
     je      .page_up
     cmp     eax, KEY_PAGE_DOWN
@@ -932,6 +966,9 @@ console_readline:
     cmp     rbx, LINE_TOO_LONG
     je      .newline
     mov     byte [r12 + rbx], 0
+    mov     rdi, r12
+    mov     esi, ebx
+    call    history_save
 .newline:
     mov     edi, 10
     call    console_putc
@@ -949,6 +986,34 @@ console_readline:
     pop     r12
     pop     rbx
     ret
+.history_up:
+    mov     edx, 1
+    jmp     .history
+.history_down:
+    mov     edx, -1
+.history:
+    mov     byte [rel last_was_cr], 0
+    cmp     rbx, LINE_TOO_LONG
+    je      .poll
+    mov     rdi, r12
+    mov     esi, ebx
+    call    history_recall
+    test    rax, rax
+    js      .poll
+    mov     rbx, rax
+    call    vga_resume
+    mov     edi, 10
+    call    console_putc
+    mov     edi, VGA_ATTR_GREEN
+    call    vga_set_color
+    lea     rdi, [rel prompt]
+    call    console_write_cstr
+    mov     edi, VGA_ATTR_WHITE
+    call    vga_set_color
+    mov     rdi, r12
+    mov     rsi, rbx
+    call    console_write
+    jmp     .poll
 .page_up:
     mov     edi, VGA_ROWS
     jmp     .page
@@ -1168,3 +1233,5 @@ last_was_cr:    resb 1
 alignb 8
 vga_ram_row:    resq 1
 vga_ring:       resb VGA_RING_BYTES
+
+%include "history.inc"

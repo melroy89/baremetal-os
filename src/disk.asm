@@ -6,7 +6,7 @@ default rel
 
 extern block_init
 extern block_read
-extern block_count
+extern block_capacity, block_selected
 extern block_model
 extern command_gpt
 extern disk_check_volume
@@ -54,11 +54,31 @@ command_disk:
     add     rbx, 24
     jmp     .next
 .found:
+    cmp     qword [rbx + 16], 2        ; Volume operations take a mount path.
+    je      .dispatch
+    cmp     dword [r13], 'disk'
+    jne     .implicit
+    movzx   eax, byte [r13 + 4]
+    sub     eax, '0'
+    cmp     eax, 1
+    ja      .usage
+    mov     [rel block_selected], eax
+    add     r13, 5
+    cmp     byte [r13], 0
+    je      .arguments
+    cmp     byte [r13], ' '
+    jne     .usage
+.disk_space:
+    inc     r13
+    cmp     byte [r13], ' '
+    je      .disk_space
+    jmp     .arguments
+.implicit:
+    mov     dword [rel block_selected], -1
+.arguments:
     xor     eax, eax
     cmp     byte [r13], 0
     setne   al
-    cmp     qword [rbx + 16], 2        ; Optional argument
-    je      .dispatch
     cmp     rax, [rbx + 16]
     jne     .usage
 .dispatch:
@@ -101,12 +121,18 @@ disk_info:
     test    rax, rax
     jnz     disk_error
     lea     rdi, [rel model_label]
+    cmp     dword [rel block_selected], 0
+    je      .label
+    lea     rdi, [rel virtio_label]
+.label:
     call    console_write_cstr
-    lea     rdi, [rel block_model]
+    call    block_model
+    mov     rdi, rax
     call    console_write_cstr
     lea     rdi, [rel geometry_label]
     call    console_write_cstr
-    mov     rdi, [rel block_count]
+    call    block_capacity
+    mov     rdi, rax
     call    write_u64
 disk_newline:
     mov     edi, 10
@@ -151,7 +177,7 @@ crc_name:       db "crc32", 0
 gpt_name:       db "gpt", 0
 check_name:     db "check", 0
 repair_name:    db "repair", 0
-disk_usage:     db "Usage: disk info | crc32 LBA | gpt | check [PATH] | repair [PATH]", 10, 0
+disk_usage:     db "Usage: disk info [diskN] | crc32 [diskN] LBA | gpt [diskN] | check [PATH] | repair [PATH]", 10, 0
 invalid_lba:    db "Invalid decimal LBA.", 10, 0
 
 align 8
@@ -162,6 +188,7 @@ operations:
     dq check_name, disk_check_volume, 2
     dq repair_name, disk_repair_volume, 2
     dq 0
+virtio_label:   db "Virtio disk: ", 0
 model_label:    db "ATA disk: ", 0
 geometry_label: db 10, "Logical sector size: 512 bytes", 10, "Sectors: ", 0
 

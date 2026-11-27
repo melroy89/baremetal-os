@@ -24,6 +24,8 @@ extern console_write_cstr
 extern console_putc
 
 section .text
+extern block_selected
+
 global fat_mount
 global fat_list
 global fat_cat
@@ -137,6 +139,9 @@ fat_mount:
     mov     byte [rbp + mount_volume.pending_write], 0
     mov     byte [rbp + mount_volume.write_error], 0
     lea     rdi, [rel mounted_text]
+    cmp     byte [rbp + mount_volume.read_only], 0
+    je      .print
+    lea     rdi, [rel fat_mounted_ro]
     jmp     .print
 .busy:
     lea     rax, [rel already_mounted]
@@ -164,7 +169,7 @@ fat_finish:
     cmp     byte [rbp + mount_volume.pending_write], 0
     je      .clear
     sub     rsp, 8
-    call    block_flush
+    call    fat_flush
     add     rsp, 8
     test    rax, rax
     jnz     .done
@@ -274,8 +279,9 @@ fat_cat:
     pop     rbx
     ret
 
-; esi = directory cluster (zero selects the root). edi != 0 lists entries.
+; esi = directory cluster (zero selects the root). edi = 1 lists entries.
 ; Otherwise find a unique name_buf match or the first free slot.
+; edi = 2 also refuses live long-name slots whose names we cannot compare.
 scan_directory:
     push    rbx
     push    r12
@@ -320,8 +326,8 @@ scan_directory:
     mov     byte [rel pending_lfn], 0
     test    byte [rsi + 11], 0x08      ; Skip volume labels.
     jnz     .advance
-    test    r15d, r15d
-    jnz     .list_entry
+    cmp     r15d, 1
+    je      .list_entry
     lea     rdi, [rel name_buf]
     xor     ecx, ecx
 .compare:
@@ -354,6 +360,8 @@ scan_directory:
     mov     [rel slot_attr], al
     jmp     .advance
 .long_name:
+    cmp     r15d, 2
+    je      .unverified_name
     mov     byte [rel pending_lfn], 1
     jmp     .advance
 .list_entry:
@@ -409,6 +417,9 @@ scan_directory:
     jmp     .done
 .corrupt:
     lea     rax, [rel invalid_chain]
+    jmp     .done
+.unverified_name:
+    lea     rax, [rel fat_rename_unverified]
     jmp     .done
 .duplicate:
     lea     rax, [rel duplicate_name]
@@ -634,6 +645,8 @@ read_sector_into:
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     bad_volume_sector
     add     rdi, [rbp + mount_volume.volume_base]
+    mov     eax, [rbp + mount_volume.device]
+    mov     [rel block_selected], eax
     jmp     block_read
 write_sector:
     lea     rsi, [rel sector_buffer]
@@ -641,6 +654,8 @@ write_sector_from:
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     bad_volume_sector
     add     rdi, [rbp + mount_volume.volume_base]
+    mov     eax, [rbp + mount_volume.device]
+    mov     [rel block_selected], eax
     jmp     block_write
 bad_volume_sector:
     lea     rax, [rel unsupported_volume]
@@ -672,6 +687,8 @@ fat_copy_write:
 fat_write_mode:
     xor     r8d, r8d
 fat_store:
+    cmp     byte [rbp + mount_volume.read_only], 0
+    jne     print_fat_readonly
     cmp     byte [rbp + mount_volume.write_error], 0
     jne     print_write_blocked
     push    rbx
@@ -829,7 +846,7 @@ fat_store:
     call    preserve_end_marker
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .write_error
     mov     rdi, [rel slot_lba]
@@ -881,14 +898,14 @@ fat_store:
     call    write_sector
     test    rax, rax
     jnz     .write_error
-    call    block_flush               ; Publish before reclaiming the old chain.
+    call    fat_flush               ; Publish before reclaiming the old chain.
     test    rax, rax
     jnz     .write_error
     mov     edi, [rel old_head]
     call    free_chain
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .write_error
     mov     byte [rbp + mount_volume.pending_write], 0
@@ -913,7 +930,7 @@ fat_store:
     call    free_chain
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .write_error
     mov     byte [rbp + mount_volume.pending_write], 0
@@ -1029,6 +1046,8 @@ validate_directory_chain:
 
 ; rdi = name, esi = parent cluster, edx = require a directory.
 fat_rm:
+    cmp     byte [rbp + mount_volume.read_only], 0
+    jne     print_fat_readonly
     cmp     byte [rbp + mount_volume.write_error], 0
     jne     print_write_blocked
     push    rbx
@@ -1080,7 +1099,7 @@ fat_rm:
     call    write_sector
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .write_error
     mov     edi, [rel slot_cluster]
@@ -1089,7 +1108,7 @@ fat_rm:
     call    free_chain
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .write_error
 .done:
@@ -1264,7 +1283,7 @@ init_dot_entries:
 
 prepare_mutation:
     sub     rsp, 8
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .done
     mov     byte [rbp + mount_volume.pending_write], 1
@@ -1514,7 +1533,7 @@ extend_directory:
     inc     r12
     dec     r13d
     jnz     .zero_sector
-    call    block_flush
+    call    fat_flush
     test    rax, rax
     jnz     .done
     mov     edi, [rel slot_dir_cluster]
@@ -1578,6 +1597,10 @@ preserve_end_marker:
 print_unmounted:
     lea     rdi, [rel no_mount]
     jmp     console_write_cstr
+print_fat_readonly:
+    lea     rdi, [rel fat_readonly]
+    jmp     console_write_cstr
+
 print_write_blocked:
     lea     rdi, [rel blocked_text]
     jmp     console_write_cstr
@@ -1587,6 +1610,7 @@ print_error:
 
 section .rodata
 short_punctuation:  db "!#$%&'()-@^_`{}~", 0
+fat_mounted_ro: db "FAT32 mounted read-only.", 10, 0
 mounted_text:       db "FAT32 mounted.", 10, 0
 unmounted_text:     db "FAT32 unmounted.", 10, 0
 already_mounted:    db "Unmount the current FAT32 volume first.", 10, 0
@@ -1610,6 +1634,7 @@ file_large:         db "File is too large for this FAT32 writer.", 10, 0
 saved_text:         db "Disk file saved.", 10, 0
 directory_saved:    db "Directory created.", 10, 0
 directory_exists:   db "File or directory already exists.", 10, 0
+fat_readonly: db "FAT32 is read-only.", 10, 0
 blocked_text:       db "FAT32 writes stopped after an I/O error.", 10, 0
 
 section .data
@@ -1655,3 +1680,10 @@ sector_buffer:       resb BLOCK_SIZE
 
 %include "fat32_check.inc"
 %include "fat32_copy.inc"
+%include "fat32_move.inc"
+
+section .text
+fat_flush:
+    mov     eax, [rbp + mount_volume.device]
+    mov     [rel block_selected], eax
+    jmp     block_flush

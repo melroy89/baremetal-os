@@ -25,11 +25,13 @@ struc ext_inode
     alignb 8
 endstruc
 
-extern vfs_mount_partition, block_read
+extern vfs_mount_partition, block_read, block_read_range
 extern block_write, block_flush, page_alloc, page_free, ip_checkpoint
 extern console_write, console_write_cstr, console_putc
 
 section .text
+extern block_selected
+
 global ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
 
 ; rbp = mount, rdi = GPT partition number. Publish after validating root.
@@ -75,7 +77,7 @@ ext_mount:
     mov     [rbp + mount_volume.ext_inode_size], ecx
     test    dword [rbx + 92], ~0x38     ; xattr, resize_inode, dir_index
     jnz     .bad
-    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
     jne     .read_features
     cmp     dword [rbx + 92], 0
     jne     .write_features
@@ -141,7 +143,7 @@ ext_mount:
     test    rax, rax
     jnz     .done
     mov     byte [rbp + mount_volume.write_error], 0
-    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
     jne     .publish
     call    ext_verify_allocations
     test    rax, rax
@@ -167,6 +169,8 @@ read_sector:
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     corrupt
     add     rdi, [rbp + mount_volume.volume_base]
+    mov     eax, [rbp + mount_volume.device]
+    mov     [rel block_selected], eax
     jmp     block_read
 
 ; edi = inode number, rsi = decoded inode destination.
@@ -566,6 +570,7 @@ ext_open:
     jne     .type
     mov     [rel file_volume], rbp
     mov     qword [rel cached_logical], -1
+    mov     byte [rel file_block_valid], 0
     mov     rdx, [rel file_inode + ext_inode.size]
     mov     ecx, [rsp]
     jmp     .done
@@ -605,9 +610,12 @@ ext_read_at:
     call    map_block
     test    rax, rax
     jnz     .done
+    mov     byte [rel file_block_valid], 0
     mov     [rel cached_physical], edx
     mov     [rel cached_logical], rbx
 .cached:
+    cmp     dword [rbp + mount_volume.device], 1
+    je      .read_block
     mov     rsi, r13
     and     esi, BLOCK_SIZE - 1
     mov     ebx, BLOCK_SIZE
@@ -631,10 +639,43 @@ ext_read_at:
     and     esi, BLOCK_SIZE - 1
     lea     rax, [rel file_sector]
     add     rsi, rax
+.copy_bytes:
     mov     rdi, r12
     mov     ecx, ebx
     rep     movsb
     jmp     .advance
+.read_block:
+    mov     esi, r13d
+    and     esi, EXT_BLOCK - 1
+    mov     ebx, EXT_BLOCK
+    sub     ebx, esi
+    cmp     ebx, r14d
+    cmova   ebx, r14d
+    mov     edi, [rel cached_physical]
+    test    edi, edi
+    jz      .hole
+    cmp     byte [rel file_block_valid], 0
+    jne     .block_bytes
+    shl     rdi, 3
+    mov     rax, [rbp + mount_volume.total_sectors]
+    sub     rax, rdi
+    jc      .bad
+    cmp     rax, EXT_SECTORS
+    jb      .bad
+    add     rdi, [rbp + mount_volume.volume_base]
+    mov     dword [rel block_selected], 1
+    lea     rsi, [rel file_block]
+    mov     ecx, EXT_SECTORS
+    call    block_read_range
+    test    rax, rax
+    jnz     .done
+    mov     byte [rel file_block_valid], 1
+.block_bytes:
+    mov     esi, r13d
+    and     esi, EXT_BLOCK - 1
+    lea     rax, [rel file_block]
+    add     rsi, rax
+    jmp     .copy_bytes
 .hole:
     mov     rdi, r12
     mov     ecx, ebx
@@ -678,13 +719,22 @@ alignb 8
 file_volume: resq 1
 cached_logical: resq 1
 cached_physical: resd 1
+file_block_valid: resb 1
 dir_inode: resb ext_inode_size
 entry_inode: resb ext_inode_size
 file_inode: resb ext_inode_size
 metadata: resb BLOCK_SIZE
 dir_data: resb EXT_BLOCK
 file_sector: resb BLOCK_SIZE
+file_block: resb EXT_BLOCK
 
 %include "ext2_verify.inc"
 %include "ext2_write.inc"
 %include "ext2_remove.inc"
+%include "ext2_move.inc"
+
+section .text
+ext_flush:
+    mov     eax, [rbp + mount_volume.device]
+    mov     [rel block_selected], eax
+    jmp     block_flush

@@ -1,6 +1,6 @@
 # Ethernet and IPv4
 
-Attach a modern `virtio-net` or QEMU `e1000` adapter. The kernel prefers a usable `virtio-net` device and starts DHCP in the background once the selected adapter initializes. Use `net info` to check which driver is active and whether an address has been assigned.
+Attach a modern `virtio-net` or QEMU `e1000` adapter. The kernel prefers a usable `virtio-net` device and starts DHCP in the background once the selected adapter initializes. Use `net info` to check the driver, RX wakeup mode, and IP address. On QEMU’s PC machine, a supported PCI interrupt wakes the guest for received packets. The driver uses timer polling when the firmware route is unavailable.
 
 | Command                               | Action                                                          |
 | ------------------------------------- | --------------------------------------------------------------- |
@@ -36,4 +36,4 @@ net send 52:54:00:AB:CD:EF 88B5 payload.txt
 ```
 
 Run `make test-network` for the isolated QEMU stream tests. On a Linux host with KVM, TUN/TAP, and user namespaces, `make test-network-tap` checks ping in both directions.
-Run `make bench-network` on that host to compare the two drivers over TAP with the same polling cadence.
+Run `make bench-network` on that host to compare the two drivers over TAP with the same guest settings.

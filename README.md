@@ -7,7 +7,7 @@ Bare Metal OS is a small operating system written in x86-64 assembly and designe
 **Key features**
 
 - Fast direct kernel boot in QEMU/KVM, plus ISO boot on BIOS and UEFI.
-- GPT partition inspection and volume mounting, with writable ext2, FAT32, and a built-in RAM filesystem.
+- IDE and modern virtio-blk storage with GPT partition inspection, with writable ext2, FAT32, and a built-in RAM filesystem.
 - Browse multiple mounted volumes with `cd` and `ls`, read files with `cat`, and copy them between volumes with `cp`.
 - Multicore startup and tools to inspect CPUs, memory, and PCI devices.
 - IPv4 networking with `virtio-net` and Intel `e1000` adapters, including ARP, UDP, `ping`, DHCP, and DNS lookups.
@@ -63,7 +63,7 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 | `help`                        | List console commands.                             |
 | `info`, `cpu`, `mem`          | Inspect the guest, CPU, and memory.                |
 | `lspci`                       | List PCI devices.                                  |
-| `disk info`                   | Inspect the attached IDE disk.                     |
+| `disk info [diskN]`           | Inspect an attached disk.                          |
 | `net info`                    | Show the Ethernet adapter and IPv4 configuration.  |
 | `ls [PATH]`                   | List a directory or show mounts at `/`.            |
 | `cd PATH`, `pwd`              | Change or show the current directory.              |
@@ -72,9 +72,10 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 | `touch PATH`                  | Create an empty file.                              |
 | `cp SOURCE DEST`              | Copy a file.                                       |
 | `mkdir PATH`                  | Create a directory on writable FAT32 or ext2.      |
+| `mv SOURCE DEST`              | Rename a regular file in the same disk directory.  |
 | `rm PATH`                     | Remove a file or an empty directory.               |
-| `mount [disk0pN /NAME]`       | List mounts or mount a FAT32 partition.            |
-| `mount -t ext2 disk0pN /NAME` | Mount a supported ext2 partition.                  |
+| `mount [diskNpM /NAME]`       | List mounts or mount a FAT32 partition.            |
+| `mount -t ext2 diskNpM /NAME` | Mount a supported ext2 partition.                  |
 | `umount /NAME`                | Unmount a named volume.                            |
 | `uptime`, `log`, `version`    | Check runtime, boot milestones, and build details. |
 | `reboot`, `halt`              | Restart or power off the guest.                    |
@@ -82,7 +83,7 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 ## Documentation
 
 - [Console commands and RAM files](docs/console.md)
-- [IDE storage, GPT, ext2, and FAT32](docs/storage.md)
+- [Disk setup, GPT, ext2, and FAT32](docs/storage.md)
 - [IPv4 setup and Ethernet commands](docs/networking.md)
 - [Run with libvirt or Proxmox VE](docs/virtualization.md)
 

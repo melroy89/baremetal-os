@@ -276,6 +276,8 @@ rw_write_sector:
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     rw_invalid
     add     rdi, [rbp + mount_volume.volume_base]
+    mov     eax, [rbp + mount_volume.device]
+    mov     [rel block_selected], eax
     jmp     block_write
 
 ; edi = clean bit. Update only the primary superblock.
@@ -293,7 +295,7 @@ ext_set_state:
     call    rw_write_sector
     test    rax, rax
     jnz     .done
-    call    block_flush
+    call    ext_flush
 .done:
     pop     rbx
     ret
@@ -302,9 +304,9 @@ ext_set_state:
 ; Detach a failed mount after a successful flush, leaving it dirty.
 ext_finish:
     push    rbx
-    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
     jne     .detach
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .failed
     cmp     byte [rbp + mount_volume.write_error], 0
@@ -365,7 +367,7 @@ ext_create:
     mov     r14d, ecx
     mov     r15d, r8d
     mov     [rel copy_source_inode], r9d
-    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
     jne     .readonly
     cmp     byte [rbp + mount_volume.write_error], 0
     jne     .blocked
@@ -438,7 +440,7 @@ ext_create:
     test    rax, rax
     jnz     .write_error
 .flush_inode:
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .write_error
     cmp     r15d, 2
@@ -452,7 +454,7 @@ ext_create:
     call    rw_publish
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .write_error
     cmp     r15d, 1
@@ -504,14 +506,14 @@ ext_create:
     call    rw_reserve_allocations
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .write_error
     mov     edi, [rel target_inode]
     call    rw_write_inode
     test    rax, rax
     jnz     .write_error
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .write_error
     call    rw_reclaim
@@ -650,7 +652,7 @@ rw_change_links_timestamp:
     call    rw_save_inode_sector
     test    rax, rax
     jnz     .done
-    call    block_flush
+    call    ext_flush
 .done:
     add     rsp, 8
     pop     r12
@@ -962,7 +964,7 @@ rw_grow_directory:
     call    rw_adjust_super
     test    rax, rax
     jnz     .done
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .done
     mov     edi, [rel parent_inode]
@@ -976,7 +978,7 @@ rw_grow_directory:
     call    rw_save_inode_sector
     test    rax, rax
     jnz     .done
-    call    block_flush
+    call    ext_flush
     test    rax, rax
     jnz     .done
     shl     rbx, 3

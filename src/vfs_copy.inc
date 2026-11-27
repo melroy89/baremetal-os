@@ -102,7 +102,7 @@ command_cp:
     call    ramfs_write
     jmp     .done
 .to_ext:
-    cmp     byte [rbp + mount_volume.ext_readonly], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
     jne     .readonly
     cmp     r14, 48 * 1024
     ja      .large_ext

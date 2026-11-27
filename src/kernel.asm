@@ -37,15 +37,15 @@ extern command_lspci
 extern command_disk
 extern command_net, command_ping
 extern dhcp_start
-extern vfs_shutdown, net_shutdown
+extern vfs_shutdown, net_shutdown, virtio_blk_shutdown
 extern ramfs_mount
 extern command_ls, command_cat, command_rm, command_cd, command_pwd
-extern command_touch, command_cp, command_mkdir
+extern command_touch, command_cp, command_mkdir, command_mv
 extern command_mount, command_umount
 extern command_echo
 
 section .text
-global kernel_main
+global kernel_main, prompt
 global print_cpu_counts
 
 kernel_main:
@@ -257,6 +257,7 @@ command_reboot:
     lea     rdi, [rel reboot_text]
     call    console_write_cstr
     call    net_shutdown
+    call    virtio_blk_shutdown
     call    qemu_reboot
     lea     rdi, [rel reboot_failed]
     add     rsp, 8
@@ -317,6 +318,7 @@ command_halt:
     lea     rdi, [rel poweroff_text]
     call    console_write_cstr
     call    net_shutdown
+    call    virtio_blk_shutdown
     jmp     qemu_shutdown
 
 power_error:
@@ -359,6 +361,7 @@ help_text:
     help_row "crc32range", "Checksum a file byte range"
     help_row "echo",     "Print text or write it to a file with >"
     help_row "cp SRC DST", "Copy a file"
+    help_row "mv SRC DST", "Rename a file within one disk directory"
     help_row "touch PATH", "Create an empty file if it does not exist"
     help_row "mkdir PATH", "Create a FAT32 or ext2 directory"
     help_row "rm PATH",  "Remove a file or an empty directory"
@@ -410,6 +413,7 @@ crc32range_name:   db "crc32range", 0
 echo_name:         db "echo", 0
 rm_name:           db "rm", 0
 cp_name:           db "cp", 0
+mv_name:           db "mv", 0
 touch_name:        db "touch", 0
 mkdir_name:        db "mkdir", 0
 uptime_name:       db "uptime", 0
@@ -443,6 +447,7 @@ commands:
     dq crc32range_name, command_crc32range, 1
     dq echo_name, command_echo, 1
     dq cp_name, command_cp, 1
+    dq mv_name, command_mv, 1
     dq touch_name, command_touch, 1
     dq mkdir_name, command_mkdir, 1
     dq rm_name, command_rm, 1

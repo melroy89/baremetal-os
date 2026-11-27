@@ -5,7 +5,7 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o rtc.o runtime.o smp.o vfs.o virtio_net.o)
+OBJECTS := $(addprefix $(BUILD)/,ata.o block.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o rtc.o runtime.o smp.o vfs.o virtio_pci.o virtio_blk.o virtio_net.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
 FAT_FIXTURES := $(addprefix $(BUILD)/fat32-,interrupt.elf mkdir-linked.elf fault.elf overlap.elf)
@@ -17,7 +17,7 @@ INITRAMFS ?=
 .PHONY: all os os-check os-run os-iso clean \
 	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage \
 	test-network test-network-e1000 test-network-virtio test-network-dhcp-e1000 \
-	test-network-dhcp-virtio test-ext2
+	test-network-dhcp-virtio test-ext2 test-followups
 
 all: os
 
@@ -30,10 +30,12 @@ $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -I$(BUILD)/ $< -o $@
 
 $(BUILD)/kernel.o: $(BUILD)/build_id.inc
+$(BUILD)/virtio_pci.o $(BUILD)/virtio_blk.o $(BUILD)/virtio_net.o: src/virtio_pci.inc
+$(BUILD)/drivers.o: src/history.inc
 $(BUILD)/ip.o: src/udp.inc src/dhcp.inc src/dns.inc
-$(BUILD)/ext2.o: src/ext2_verify.inc src/ext2_write.inc src/ext2_remove.inc
-$(BUILD)/fat32.o: src/fat32_check.inc src/fat32_copy.inc
-$(BUILD)/vfs.o: src/vfs_copy.inc src/vfs_read.inc
+$(BUILD)/ext2.o: src/ext2_verify.inc src/ext2_write.inc src/ext2_remove.inc src/ext2_move.inc
+$(BUILD)/fat32.o: src/fat32_check.inc src/fat32_copy.inc src/fat32_move.inc
+$(BUILD)/vfs.o: src/vfs_copy.inc src/vfs_read.inc src/vfs_move.inc
 $(BUILD)/ext2.o $(BUILD)/fat32.o $(BUILD)/vfs.o: src/volume.inc
 
 $(BUILD)/build_id.inc: $(BUILD_ID_INPUTS) | $(BUILD)
@@ -52,7 +54,7 @@ os-check: $(KERNEL)
 	readelf -l $(KERNEL)
 
 # Start the longer suites first when running with parallel make.
-test: os-check test-ext2 test-storage test-network test-boot test-pages test-smp test-ramfs
+test: os-check test-ext2 test-storage test-network test-boot test-pages test-smp test-ramfs test-followups
 
 test-boot: $(BUILD)/baremetal-os.iso
 	bash tests/boot_smoke.sh "$(BUILD)"
@@ -117,6 +119,24 @@ test-fat32: $(KERNEL) $(FAT_FIXTURES)
 test-ext2: $(KERNEL) $(EXT2_FAULTS)
 	bash tests/ext2_boot.sh "$(BUILD)"
 	bash tests/ext2_write.sh "$(BUILD)"
+
+test-followups: $(KERNEL) $(BUILD)/net-irq.elf $(BUILD)/net-poll.elf $(BUILD)/ext2-fixture-BEFORE.elf
+	bash tests/network_boot.sh "$(BUILD)" irq
+	bash tests/followups_boot.sh "$(BUILD)"
+
+$(BUILD)/net-irq.o: tests/net_irq.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/net-poll.o: tests/net_irq.asm | $(BUILD)
+	$(NASM) -f elf64 -DFALLBACK $< -o $@
+
+$(BUILD)/net-poll.elf64: NET_IRQ_WRAPPERS := --wrap=pci_config_read32
+$(BUILD)/net-irq.elf64 $(BUILD)/net-poll.elf64: %.elf64: %.o $(OBJECTS) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		--wrap=net_timer $(NET_IRQ_WRAPPERS) $(filter %.o,$^) -o $@
+
+$(BUILD)/net-irq.elf $(BUILD)/net-poll.elf: %.elf: %.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
 
 test-network: test-network-dhcp-e1000 test-network-dhcp-virtio test-network-e1000 test-network-virtio
 
@@ -186,7 +206,7 @@ bench-ext2: $(addprefix $(BUILD)/ext2-bench-,4.elf 16.elf 64.elf)
 $(BUILD)/ext2-bench.o: tests/ext2_bench.asm | $(BUILD)
 	$(NASM) -f elf64 $< -o $@
 
-$(BUILD)/vfs-bench-%.o: src/vfs.asm src/vfs_copy.inc src/vfs_read.inc src/volume.inc src/os_constants.inc | $(BUILD)
+$(BUILD)/vfs-bench-%.o: src/vfs.asm src/vfs_copy.inc src/vfs_read.inc src/vfs_move.inc src/volume.inc src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -DEXT_RANGE_BUFFER='($* * 1024)' $< -o $@
 
 $(BUILD)/ext2-bench-%.elf64: $(BUILD)/vfs-bench-%.o $(BUILD)/ext2-bench.o $(filter-out $(BUILD)/vfs.o,$(OBJECTS)) src/linker.ld
@@ -220,7 +240,7 @@ $(BUILD)/ext2-fixture-%.elf: $(BUILD)/ext2-fixture-%.elf64
 bench-network: $(KERNEL)
 	unshare --user --map-root-user --net bash tests/network_bench.sh "$(BUILD)"
 
-$(BUILD)/virtio-net-test.o: src/virtio_net.asm src/os_constants.inc | $(BUILD)
+$(BUILD)/virtio-net-test.o: src/virtio_net.asm src/os_constants.inc src/virtio_pci.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -DTEST_VIRTIO_TX $< -o $@
 
 $(BUILD)/virtio-queue.o: tests/virtio_queue.asm | $(BUILD)
