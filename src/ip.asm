@@ -23,6 +23,7 @@ default rel
 
 extern net_init, net_mac, net_rx_poll, net_tx_submit, net_tx_complete
 extern net_rx_boundary, net_rx_recycle, net_timer, net_irq_enable, net_irq_disable
+extern net_irq_rearm
 extern timer_ns, console_write_cstr, console_putc, write_u64, str_eq
 
 global ip_mode, ip_command, ip_service, ip_info, command_ping, ip_usage
@@ -485,6 +486,22 @@ ip_service:
     xor     eax, eax
     ret
 
+; Called with interrupts disabled and eax holding the ip_service batch result.
+; Poll again after a full batch or if arming RX finds queued completions.
+ip_wait_rx:
+    test    eax, eax
+    jnz     .done
+    sub     rsp, 8
+    call    net_irq_rearm
+    add     rsp, 8
+    test    eax, eax
+    jnz     .done
+    sti                              ; Deliver pending interrupts after HLT.
+    hlt
+    cli
+.done:
+    ret
+
 ; rdi = Ethernet frame, esi = size. Only NIC unicast or Ethernet broadcast.
 ip_frame:
     mov     eax, [rdi]
@@ -811,17 +828,15 @@ command_ping:
     mov     byte [rel ping_state], 1
 .wait:
     call    ip_service
-    mov     al, [rel ping_state]
-    cmp     al, 3
+    mov     cl, [rel ping_state]
+    cmp     cl, 3
     je      .reply
-    test    al, al
+    test    cl, cl
     jz      .cancelled
-    mov     rax, [rel ip_now]
-    cmp     rax, [rel ping_deadline]
+    mov     rcx, [rel ip_now]
+    cmp     rcx, [rel ping_deadline]
     jae     .timeout
-    sti
-    hlt
-    cli
+    call    ip_wait_rx
     jmp     .wait
 .reply:
     mov     byte [rel ping_state], 0

@@ -118,9 +118,7 @@ dns_lookup:
     call    ip_service
     cmp     word [rel dns_port], 0
     je      .result
-    sti
-    hlt
-    cli
+    call    ip_wait_rx
     jmp     .wait
 .result:
     mov     rax, [rel dns_result]

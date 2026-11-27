@@ -69,8 +69,9 @@ check_network() {
 }
 
 check_irq() {
-    local peer wire_in wire_out frame
+    local peer wire_in wire_out frame query_port query_id query_name
     expect_serial 'baremetal> '
+    console_check 'net off' 'IPv4: off'
     start_wire
     console_check 'net static 192.0.2.10/24' 'IPv4: static'
     if [[ $fixture == net-irq ]]; then
@@ -78,6 +79,39 @@ check_irq() {
     else
         console_check 'net info' 'RX wakeup: polling'
     fi
+
+    # An empty ARP cache forces ping to wait for two separate RX interrupts.
+    printf 'ping 192.0.2.1\r' >&"$serial_write"
+    wire_receive
+    [[ ${frame:24:4} == 0806 && ${frame:40:4} == 0001 && ${frame:76:8} == "$peer_ip" ]]
+    sleep 0.1
+    arp_packet 0002 "$peer_ip" "$guest_ip" "$peer_mac" "$guest_mac"
+    # A timer tick may have queued an ARP retry in polling mode.
+    while :; do
+        wire_receive
+        [[ ${frame:24:4} == 0800 ]] && break
+        [[ ${frame:24:4} == 0806 && ${frame:40:4} == 0001 && ${frame:76:8} == "$peer_ip" ]]
+    done
+    assert_icmp_frame "$frame" "$guest_ip" "$peer_ip" 08
+    sleep 0.1
+    icmp_packet 00 "$peer_ip" "${frame:76:8}"
+    expect_serial 'Reply from 192\.0\.2\.1'
+    expect_serial 'baremetal> '
+
+    # A CNAME-only reply requires a second DNS query while the console waits.
+    console_check 'net dns 192.0.2.1' 'DNS configured\.'
+    printf 'net resolve alias.test\r' >&"$serial_write"
+    dns_query_fields
+    [[ $query_name == 05616c69617304746573740000010001 ]]
+    sleep 0.1
+    dns_reply 8180 "$query_name" 0001 c00c0005000100000000000d06746172676574047465737400
+    dns_query_fields
+    [[ $query_name == 0674617267657404746573740000010001 ]]
+    sleep 0.1
+    dns_reply 8180 "$query_name" 0001 c00c00010001000000000004c00002fe
+    expect_serial $'\r?\n192\\.0\\.2\\.254\r?\n'
+    expect_serial 'baremetal> '
+
     for _ in 1 2 3; do
         sleep 0.1
         icmp_packet 08 "$peer_ip" 12345678a1b2c3
