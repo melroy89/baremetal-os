@@ -41,25 +41,11 @@ check_fallback() {
 }
 
 check_network() {
-    local attempt frame link peer wire_in wire_out
+    local peer wire_in wire_out frame
     expect_serial 'baremetal> '
     console_check 'net off' 'IPv4: off'
-    connect_wire 45
-
-    for attempt in {1..20}; do
-        printf 'net info\r' >&"$serial_write"
-        expect_serial $'PCI: 00:07\\.0\r?\nMAC: 52:54:00:12:34:56\r?\nLink: (up|down)\r?\n'
-        link=${BASH_REMATCH[1]}
-        expect_serial 'baremetal> '
-        if [[ $link == up ]]; then
-            break
-        fi
-        sleep 0.2
-    done
-    if [[ $link != up ]]; then
-        printf 'Timed out waiting for the isolated link\n' >&2
-        return 1
-    fi
+    start_wire
+    console_check 'net info' $'PCI: 00:07\\.0\r?\nMAC: 52:54:00:12:34:56\r?\nLink: up'
 
     console_check 'net recv' 'Ethernet receive timed out\.'
     console_check 'echo Test > /ram/payload' 'echo Test > /ram/payload'
@@ -77,9 +63,16 @@ check_network() {
     console_check 'net send 52:54:00:AB:CD:EF 88B5 maximum.bin' 'Sent 1514 bytes'
     timeout 5 dd bs=1518 count=1 iflag=fullblock of="$files/captured" status=none <&"$wire_out"
     cmp "$files/expected-max" "$files/captured"
+    check_ipv4
     kill "$peer" 2>/dev/null || true
     wait "$peer" 2>/dev/null || true
 }
+
+suite=${2:-all}
+case $suite in
+    all|e1000|virtio|dhcp-e1000|dhcp-virtio) ;;
+    *) printf 'Unknown network test suite: %s\n' "$suite" >&2; exit 2 ;;
+esac
 
 files=$(mktemp -d)
 trap 'find "$files" -depth -delete' EXIT
@@ -88,6 +81,31 @@ kernel="$build_dir/baremetal-os.elf"
 mkfifo "$files/to-guest" "$files/from-guest"
 # QEMU stream packets have a four-byte big-endian length before Ethernet.
 printf '\000\000\000\074\122\124\000\022\064\126\122\124\000\253\315\357\210\265%046d' 0 > "$files/inbound"
+
+run_adapter() {
+    local nic_model=$1 check=$2 adapter driver
+    case $nic_model in
+        e1000) adapter=e1000 driver=e1000 ;;
+        virtio) adapter=virtio-net-pci,disable-legacy=on driver=virtio-net ;;
+    esac
+    local -a stream=(
+        -machine pc -device "$adapter,netdev=wire,addr=0x7,mac=52:54:00:12:34:56"
+        -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
+    )
+    if [[ $check == check_dhcp ]]; then
+        run_guest "$driver DHCP renewal, rebinding, expiry, and conflict" 1 64M check_dhcp -cpu max \
+            -kernel "$build_dir/network-fixture.elf" "${stream[@]}"
+    else
+        run_guest "$driver Ethernet, IPv4, ARP, ICMP and DNS" 1 128M check_network -cpu max -kernel "$kernel" \
+            -initrd "$files/network.tar" "${stream[@]}"
+    fi
+}
+
+if [[ $suite == dhcp-* ]]; then
+    run_adapter "${suite#dhcp-}" check_dhcp
+    exit
+fi
+
 printf '\000\000\000\074\122\124\000\253\315\357\122\124\000\022\064\126\210\265Test\n' > "$files/expected"
 dd if=/dev/zero bs=41 count=1 status=none >> "$files/expected"
 {
@@ -103,46 +121,12 @@ ram_range_crc=$(tail -c +2 "$files/checksum.bin" |
     gzip -n | tail -c 8 | od -An -N4 -t x4 | tr -d ' \n' | tr 'a-f' 'A-F')
 ram_file_crc=$(gzip -n < "$files/checksum.bin" |
     tail -c 8 | od -An -N4 -t x4 | tr -d ' \n' | tr 'a-f' 'A-F')
-tar --format=ustar -C "$files" -cf "$files/bulk.tar" bulk.txt checksum.bin
 printf "%01500d" 42 > "$files/maximum.bin"
-tar --format=ustar -C "$files" -cf "$files/maximum.tar" maximum.bin
+tar --format=ustar -C "$files" -cf "$files/network.tar" bulk.txt checksum.bin maximum.bin
 printf "\\000\\000\\005\\352\\122\\124\\000\\022\\064\\126\\122\\124\\000\\253\\315\\357\\210\\265" > "$files/inbound-max"
 printf "\\000\\000\\005\\352\\122\\124\\000\\253\\315\\357\\122\\124\\000\\022\\064\\126\\210\\265" > "$files/expected-max"
 cat "$files/maximum.bin" >> "$files/inbound-max"
 cat "$files/maximum.bin" >> "$files/expected-max"
-
-
-run_guest 'NIC absent' 1 64M check_no_nic -machine pc -kernel "$kernel"
-
-run_adapter() {
-    local nic_model=$1 adapter driver
-    case $nic_model in
-        e1000) adapter=e1000 driver=e1000 ;;
-        virtio) adapter=virtio-net-pci,disable-legacy=on driver=virtio-net ;;
-    esac
-    local -a stream=(
-        -machine pc -device "$adapter,netdev=wire,addr=0x7,mac=52:54:00:12:34:56"
-        -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
-    )
-    run_guest "$driver Ethernet frame I/O" 1 64M check_network -kernel "$kernel" -initrd "$files/maximum.tar" "${stream[@]}"
-    run_guest "$driver IPv4, ARP, ICMP and DNS" 1 128M check_ipv4 -cpu max -kernel "$kernel" \
-        -initrd "$files/bulk.tar" "${stream[@]}"
-    run_guest "$driver DHCP renewal, rebinding, expiry, and conflict" 1 64M check_dhcp -cpu max \
-        -kernel "$build_dir/network-fixture.elf" "${stream[@]}"
-}
-
-driver=e1000 run_guest 'automatic DHCP on e1000' 1 64M check_boot_dhcp \
-    -machine pc -kernel "$kernel" -device e1000,netdev=wire -netdev user,id=wire
-run_adapter e1000
-run_adapter virtio
-
-run_guest 'virtio initialization falls back to e1000' 1 64M check_fallback -machine pc -kernel "$kernel" \
-    -device virtio-net-pci,disable-modern=on,netdev=legacy,addr=0x6 -netdev user,id=legacy \
-    -device e1000,netdev=wire,addr=0x7 -netdev user,id=wire
-driver=virtio-net run_guest 'virtio gets a DHCP lease after skipping a legacy-only adapter' \
-    1 64M check_boot_dhcp -machine pc -kernel "$kernel" \
-    -device virtio-net-pci,disable-modern=on,netdev=legacy,addr=0x6 -netdev user,id=legacy \
-    -device virtio-net-pci,disable-legacy=on,netdev=wire,addr=0x7 -netdev user,id=wire
 
 check_virtio_retry() {
     local peer wire_in wire_out sender attempt
@@ -163,19 +147,6 @@ check_virtio_retry() {
     wait "$peer" 2>/dev/null || true
 }
 
-run_guest 'virtio first raw receive retries initialization with an odd ISR' 1 64M check_virtio_retry \
-    -machine pc -kernel "$build_dir/virtio-retry.elf" \
-    -device virtio-net-pci,disable-legacy=on,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
-    -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
-
-run_guest 'DNS without RDRAND' 1 64M check_dns_no_feature -machine pc -cpu max,-rdrand -kernel "$kernel" \
-    -device e1000,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
-    -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
-run_guest 'DNS entropy retry and port collision' 1 64M check_dns_fault \
-    -machine pc -cpu max -kernel "$build_dir/dns-fault.elf" \
-    -device e1000,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
-    -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
-
 check_virtio_queue() {
     local peer wire_in wire_out frame number header
     expect_serial 'baremetal> '
@@ -194,7 +165,46 @@ check_virtio_queue() {
     wait "$peer" 2>/dev/null || true
 }
 
-run_guest 'virtio TX backpressure, completion and reuse' 1 64M check_virtio_queue \
-    -machine pc -kernel "$build_dir/virtio-queue.elf" \
-    -device virtio-net-pci,disable-legacy=on,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
-    -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
+run_e1000() {
+    run_guest 'NIC absent' 1 64M check_no_nic -machine pc -kernel "$kernel"
+    driver=e1000 run_guest 'automatic DHCP on e1000' 1 64M check_boot_dhcp \
+        -machine pc -kernel "$kernel" -device e1000,netdev=wire -netdev user,id=wire
+    run_adapter e1000 check_network
+    run_guest 'DNS without RDRAND' 1 64M check_dns_no_feature -machine pc -cpu max,-rdrand -kernel "$kernel" \
+        -device e1000,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
+        -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
+    run_guest 'DNS entropy retry and port collision' 1 64M check_dns_fault \
+        -machine pc -cpu max -kernel "$build_dir/dns-fault.elf" \
+        -device e1000,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
+        -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
+}
+
+run_virtio() {
+    run_adapter virtio check_network
+    run_guest 'virtio initialization falls back to e1000' 1 64M check_fallback -machine pc -kernel "$kernel" \
+        -device virtio-net-pci,disable-modern=on,netdev=legacy,addr=0x6 -netdev user,id=legacy \
+        -device e1000,netdev=wire,addr=0x7 -netdev user,id=wire
+    driver=virtio-net run_guest 'virtio gets a DHCP lease after skipping a legacy-only adapter' \
+        1 64M check_boot_dhcp -machine pc -kernel "$kernel" \
+        -device virtio-net-pci,disable-modern=on,netdev=legacy,addr=0x6 -netdev user,id=legacy \
+        -device virtio-net-pci,disable-legacy=on,netdev=wire,addr=0x7 -netdev user,id=wire
+    run_guest 'virtio first raw receive retries initialization with an odd ISR' 1 64M check_virtio_retry \
+        -machine pc -kernel "$build_dir/virtio-retry.elf" \
+        -device virtio-net-pci,disable-legacy=on,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
+        -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
+    run_guest 'virtio TX backpressure, completion and reuse' 1 64M check_virtio_queue \
+        -machine pc -kernel "$build_dir/virtio-queue.elf" \
+        -device virtio-net-pci,disable-legacy=on,netdev=wire,addr=0x7,mac=52:54:00:12:34:56 \
+        -netdev "stream,id=wire,server=on,addr.type=unix,addr.path=$files/wire"
+}
+
+case $suite in
+    all)
+        run_e1000
+        run_virtio
+        run_adapter e1000 check_dhcp
+        run_adapter virtio check_dhcp
+        ;;
+    e1000) run_e1000 ;;
+    virtio) run_virtio ;;
+esac

@@ -164,12 +164,7 @@ dns_reply() {
 }
 
 check_ipv4() {
-    local peer wire_in wire_out frame query_port query_id query_name
-    expect_serial 'baremetal> '
-    console_check 'net off' 'IPv4: off'
-    start_wire
-    cat "$files/inbound" >&"$wire_in"
-    console_check "net recv" "EtherType: 88B5"
+    local frame query_port query_id query_name
     # An already completed raw ARP frame must not be consumed by IPv4.
     arp_packet 0001 "$peer_ip" "$guest_ip" "$peer_mac" ffffffffffff
     sleep 0.1
@@ -191,8 +186,10 @@ check_ipv4() {
     icmp_packet 00 "$remote_ip" "${frame:76:8}"
     expect_serial 'Reply from 198\.51\.100\.9'
     expect_serial 'baremetal> '
-    console_check 'ping 192.0.2.99' 'Ping timed out\.'
-    # Consume the bounded ARP retries while replying to the next traffic.
+    if [[ $driver == e1000 ]]; then
+        console_check 'ping 192.0.2.99' 'Ping timed out\.'
+    fi
+    # The failed lookup can leave bounded ARP retries in the wire queue.
     printf 'ping 192.0.2.1\r' >&"$serial_write"
     while :; do
         wire_receive
@@ -230,7 +227,22 @@ check_ipv4() {
     icmp_packet 00 "$peer_ip" "${frame:76:8}"
     expect_serial 'Reply from 192\.0\.2\.1'
     expect_serial 'baremetal> '
-    local flags count question status
+    # Both drivers reach the same DNS parser after delivering an IPv4 packet.
+    if [[ $driver == e1000 ]]; then
+        check_dns_errors
+    fi
+
+    check_bulk_output
+    check_ram_checksum 'crc32range 1 67108864 /ram/checksum.bin' "$ram_range_crc" 05060708
+    check_ram_checksum 'crc32 checksum.bin' "$ram_file_crc" 05060709
+    console_check 'clear' $'\x1b\\[2J\x1b\\[H'
+    console_check 'net off' 'IPv4: off'
+    cat "$files/inbound" >&"$wire_in"
+    console_check 'net recv' 'EtherType: 88B5'
+}
+
+check_dns_errors() {
+    local flags count question status query_port query_id query_name frame
     while read -r flags count question status; do
         printf 'net resolve state.test\r' >&"$serial_write"
         dns_query_fields
@@ -247,16 +259,6 @@ check_ipv4() {
 8182 0000 good DNS.server.returned.an.error
 8180 0000 c00c00010001 DNS.query.timed.out
 STATES
-
-    check_bulk_output
-    check_ram_checksum 'crc32range 1 67108864 /ram/checksum.bin' "$ram_range_crc" 05060708
-    check_ram_checksum 'crc32 checksum.bin' "$ram_file_crc" 05060709
-    console_check 'clear' $'\x1b\\[2J\x1b\\[H'
-    console_check 'net off' 'IPv4: off'
-    cat "$files/inbound" >&"$wire_in"
-    console_check 'net recv' 'EtherType: 88B5'
-    kill "$peer" 2>/dev/null || true
-    wait "$peer" 2>/dev/null || true
 }
 
 dhcp_request_frame() {

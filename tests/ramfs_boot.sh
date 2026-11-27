@@ -93,6 +93,7 @@ check_no_archive() {
     expect_serial 'baremetal> '
     printf 'ls\r' >&"$serial_write"
     expect_serial $'ls\r?\nblank\\.txt\r?\nbaremetal> '
+    check_overlong_commands
     printf 'reboot\r' >&"$serial_write"
     expect_serial 'baremetal> '
     check_root
@@ -186,8 +187,6 @@ check_crc_archive() {
 }
 
 check_overlong_commands() {
-    expect_serial 'baremetal> '
-    enter_ram
     printf 'echo original > note\r' >&"$serial_write"
     expect_serial 'baremetal> '
     printf 'echo separate > note.txt\r' >&"$serial_write"
@@ -341,7 +340,6 @@ run_guest 'RAM filesystem without a boot archive' 1 64M check_no_archive -kernel
 run_guest 'RAM filesystem with a boot archive' 1 64M check_archive -kernel "$kernel" -initrd "$files/ramfs.tar"
 run_guest 'CRC-32 of archive and writable files' 4 64M check_crc_archive \
     -kernel "$kernel" -initrd "$files/crc.tar"
-run_guest 'Overlong RAM filesystem commands' 1 64M check_overlong_commands -kernel "$kernel"
 run_guest 'RAM filesystem with duplicate archive entries' 1 64M check_duplicate_archive \
     -kernel "$kernel" -initrd "$files/duplicates.tar"
 run_guest 'RAM filesystem with one allocatable page' 1 64M check_one_page \

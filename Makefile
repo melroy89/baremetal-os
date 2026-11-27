@@ -15,7 +15,9 @@ SMP     ?= 1
 INITRAMFS ?=
 
 .PHONY: all os os-check os-run os-iso clean \
-	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage test-network test-ext2
+	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage \
+	test-network test-network-e1000 test-network-virtio test-network-dhcp-e1000 \
+	test-network-dhcp-virtio test-ext2
 
 all: os
 
@@ -49,7 +51,8 @@ os-check: $(KERNEL)
 	grub-file --is-x86-multiboot $(KERNEL)
 	readelf -l $(KERNEL)
 
-test: os-check test-boot test-pages test-smp test-ramfs test-storage test-network test-ext2
+# Start the longer suites first when running with parallel make.
+test: os-check test-ext2 test-storage test-network test-boot test-pages test-smp test-ramfs
 
 test-boot: $(BUILD)/baremetal-os.iso
 	bash tests/boot_smoke.sh "$(BUILD)"
@@ -115,8 +118,17 @@ test-ext2: $(KERNEL) $(EXT2_FAULTS)
 	bash tests/ext2_boot.sh "$(BUILD)"
 	bash tests/ext2_write.sh "$(BUILD)"
 
-test-network: $(KERNEL) $(BUILD)/network-fixture.elf $(BUILD)/dns-fault.elf $(BUILD)/virtio-queue.elf $(BUILD)/virtio-retry.elf
-	bash tests/network_boot.sh "$(BUILD)"
+test-network: test-network-dhcp-e1000 test-network-dhcp-virtio test-network-e1000 test-network-virtio
+
+# The DHCP lease timers can run alongside the I/O tests on private QEMU sockets.
+test-network-dhcp-e1000 test-network-dhcp-virtio: test-network-%: $(BUILD)/network-fixture.elf
+	bash tests/network_boot.sh "$(BUILD)" "$*"
+
+test-network-e1000: $(KERNEL) $(BUILD)/dns-fault.elf
+	bash tests/network_boot.sh "$(BUILD)" e1000
+
+test-network-virtio: $(KERNEL) $(BUILD)/virtio-queue.elf $(BUILD)/virtio-retry.elf
+	bash tests/network_boot.sh "$(BUILD)" virtio
 
 os-run: $(KERNEL)
 	$(QEMU) -enable-kvm -cpu host -m $(RAM) -smp $(SMP) -nic none \
