@@ -13,6 +13,7 @@ command_cp:
     push    r14
     push    r15
     sub     rsp, 8
+    mov     dword [rsp], 0            ; Source inode for same-volume ext2 copies.
     call    copy_operand
     jc      .usage
     mov     r12, rdi
@@ -43,6 +44,9 @@ command_cp:
     call    disk_reader_open
     test    rax, rax
     jnz     .error
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    jne     .destination
+    mov     [rsp], ecx
 .destination:
     mov     r14, rdx
     mov     [rel reader_size], rdx
@@ -121,7 +125,10 @@ command_cp:
     mov     rsi, rbx
     mov     rdx, r14
     mov     ecx, r13d
-    call    ext_write
+    xor     r9d, r9d
+    cmp     rbp, r15
+    cmove   r9d, [rsp]
+    call    ext_copy_write
     jmp     .done
 .large_ext:
     lea     rax, [rel copy_large_ext]
@@ -218,7 +225,7 @@ section .rodata
 copy_usage:     db "Usage: cp SOURCE DEST", 10, 0
 copy_same_ram:  db "Source and destination are the same file.", 10, 0
 copy_large_ram: db "File is too large for the RAM filesystem.", 10, 0
-copy_large_ext: db "Ext2 create limit is 48 KiB.", 10, 0
+copy_large_ext: db "Ext2 write limit is 48 KiB.", 10, 0
 
 section .bss
 alignb 16

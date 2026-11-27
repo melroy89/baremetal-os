@@ -67,7 +67,11 @@ check_invalid_file_commands() {
     printf -v padding '%01024d' 0
     console_check "echo ${padding}>/disk/host.txt" 'Command too long\.'
     console_check 'rm /disk' 'Expected a file path, found a directory\.'
-    console_check 'rm /disk/subdir' 'Disk name refers to a directory\.'
+    console_check 'rm /disk/subdir' 'FAT32 directory is not empty\.'
+    console_check 'rm /disk/host.txt/' 'Trailing slash requires a directory\.'
+    console_check 'echo RAM > /ram/keep.txt' 'echo RAM'
+    console_check 'rm /ram/keep.txt/' 'Trailing slash requires a directory\.'
+    console_check 'cat /ram/keep.txt' $'\r?\nRAM\r?\n'
     console_check 'umount /disk' 'FAT32 unmounted\.'
 }
 
@@ -381,11 +385,135 @@ run_directory_fixtures() {
     check_image_unchanged 'VFS rejects a FAT32 root marked free' "$image" check_corrupt_root_traversal
 }
 
+check_directory_remove_refusals() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'cd /disk/subdir/empty' 'cd /disk/subdir/empty'
+    console_check 'rm /disk/subdir/empty' 'FAT32 directory is in use\.'
+    console_check 'rm /disk/subdir' 'FAT32 directory is in use\.'
+    console_check 'rm .' 'Expected a file path, found a directory\.'
+    console_check 'rm ..' 'Expected a file path, found a directory\.'
+    console_check 'cd /' 'cd /'
+    console_check 'rm /disk' 'Expected a file path, found a directory\.'
+    console_check 'rm /disk/subdir/multi' 'FAT32 directory is not empty\.'
+    console_check 'rm /disk/subdir/ro' 'Disk file is read-only\.'
+    console_check 'rm /disk/subdir/LongDi~1' 'Cannot remove a FAT32 file with long-name entries\.'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
+}
+
+check_malformed_directory_remove() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check "rm /disk/subdir/$remove_name" "$refusal"
+    console_check 'umount /disk' 'FAT32 unmounted\.'
+}
+
+check_directory_remove() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'cd /disk/subdir' 'cd /disk/subdir'
+    console_check 'rm /disk/subdir/empty/' $'rm /disk/subdir/empty/\r?\n'
+    console_check 'rm multi//' $'rm multi//\r?\n'
+    console_check 'cd empty' 'FAT32 directory not found\.'
+    console_check 'cd multi' 'FAT32 directory not found\.'
+    console_check 'cd /' 'cd /'
+    console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
+}
+
+check_directory_remove_cut() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    printf 'rm /disk/subdir/multi\r' >&"$serial_write"
+    expect_serial 'Test: second FAT32 flush complete\.'
+}
+
+check_directory_remove_orphans() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'cd /disk/subdir/multi' 'FAT32 directory not found\.'
+    console_check 'disk check' $'Orphaned FAT32 clusters: 2\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
+}
+
+check_directory_remove_repair() {
+    expect_serial 'baremetal> '
+    console_check 'mount disk0p1 /disk' 'FAT32 mounted\.'
+    console_check 'disk repair' $'Reclaimed FAT32 clusters: 2\r?\n'
+    console_check 'cd /disk/subdir/multi' 'FAT32 directory not found\.'
+    console_check 'cat /disk/subdir/nested.txt' $'\r?\nPeer seeded\r?\n'
+    console_check 'disk check' $'Orphaned FAT32 clusters: 0\r?\n'
+    console_check 'umount /disk' 'FAT32 unmounted\.'
+}
+
+run_remove_directory_fixtures() {
+    local image="$files/remove-directory.raw" cut="$files/remove-directory-cut.raw"
+    local invalid="$files/remove-directory-invalid.raw"
+    local entry i empty multi tail cluster fat_offset copy
+    local fillers=()
+    cp --sparse=always "$files/disk.raw" "$image"
+    mmd -i "$image@@1048576" ::SUBDIR/EMPTY ::SUBDIR/MULTI ::SUBDIR/RO ::SUBDIR/LongDirectory
+    entry=$(short_entry_offset "$image" "$subdir_offset" 'RO         ')
+    write_image_le "$image" "$((entry + 11))" 0x11 1
+
+    # Dot entries and thirty empty files fill exactly two one-sector clusters.
+    for ((i = 1; i < 30; i++)); do
+        fillers+=("$files/F$i.TXT")
+    done
+    touch "${fillers[@]}" "$files/KEEP.TXT"
+    mcopy -i "$image@@1048576" "${fillers[@]}" "$files/KEEP.TXT" ::SUBDIR/MULTI
+    mdel -i "$image@@1048576" '::SUBDIR/MULTI/F*.TXT'
+    check_image_unchanged 'FAT32 refuses busy, nonempty, read-only and LFN directory removal'         "$image" check_directory_remove_refusals
+    mdel -i "$image@@1048576" ::SUBDIR/MULTI/KEEP.TXT
+
+    entry=$(short_entry_offset "$image" "$subdir_offset" 'EMPTY      ')
+    empty=$(( ($(od -An -tu2 -j "$((entry + 20))" -N 2 "$image") << 16) |
+        $(od -An -tu2 -j "$((entry + 26))" -N 2 "$image") ))
+    entry=$(short_entry_offset "$image" "$subdir_offset" 'MULTI      ')
+    multi=$(( ($(od -An -tu2 -j "$((entry + 20))" -N 2 "$image") << 16) |
+        $(od -An -tu2 -j "$((entry + 26))" -N 2 "$image") ))
+    fat_offset=$((1048576 + fat_reserved * 512))
+    tail=$(( $(od -An -tu4 -j "$((fat_offset + multi * 4))" -N 4 "$image") & 0x0FFFFFFF ))
+    (( tail >= 2 && tail < 0x0FFFFFF0 ))
+    (( ($(od -An -tu4 -j "$((fat_offset + tail * 4))" -N 4 "$image") & 0x0FFFFFFF) >= 0x0FFFFFF8 ))
+    [[ $(od -An -tu1 -j "$((data_offset + (tail - 2) * 512 + 480))" -N 1 "$image") -eq 229 ]]
+
+    cp --sparse=always "$image" "$invalid"
+    write_image_le "$invalid" "$((data_offset + (empty - 2) * 512))" 0xE5 1
+    remove_name=empty refusal='Invalid FAT32 directory metadata\.' check_image_unchanged         'FAT32 refuses to remove a directory missing a dot entry' "$invalid" check_malformed_directory_remove
+
+    cp --sparse=always "$image" "$invalid"
+    # An end marker hides later entries, but does not excuse a broken FAT link.
+    write_image_le "$invalid" "$((data_offset + (multi - 2) * 512 + 64))" 0 1
+    write_image_le "$invalid" "$((fat_offset + fat_size * 512 + tail * 4))" 0 4
+    remove_name=multi refusal='FAT32 check failed: FAT copies disagree\.' check_image_unchanged         'FAT32 refuses a mismatched tail even after a directory end marker' "$invalid" check_malformed_directory_remove
+
+    cp --sparse=always "$image" "$cut"
+    run_guest 'FAT32 removes nested and multi-cluster empty directories' 1 64M check_directory_remove         -machine pc -kernel "$kernel" -drive "file=$image,format=raw,if=ide,index=0"
+    QEMU_TEST_POWER_CUT=1 run_guest 'FAT32 directory removal cut after unlink' 1 64M check_directory_remove_cut         -machine pc -kernel "$build_dir/fat32-interrupt.elf" -drive "file=$cut,format=raw,if=ide,cache=directsync"
+    check_image_unchanged 'FAT32 checks the unlinked directory chain without writing' "$cut" check_directory_remove_orphans
+    run_guest 'FAT32 repairs an orphaned directory chain' 1 64M check_directory_remove_repair         -machine pc -kernel "$kernel" -drive "file=$cut,format=raw,if=ide,index=0"
+
+    for ((copy = 0; copy < fat_count; copy++)); do
+        for cluster in "$empty" "$multi" "$tail"; do
+            entry=$((fat_offset + copy * fat_size * 512 + cluster * 4))
+            [[ $(od -An -tu4 -j "$entry" -N 4 "$image") -eq 0 ]]
+        done
+        for cluster in "$multi" "$tail"; do
+            entry=$((fat_offset + copy * fat_size * 512 + cluster * 4))
+            [[ $(od -An -tu4 -j "$entry" -N 4 "$cut") -eq 0 ]]
+        done
+    done
+    dd if="$image" of="$files/remove-directory.vol" bs=1M skip=1 count=64 status=none
+    fsck.fat -n "$files/remove-directory.vol"
+}
+
 run_vfs_fixtures() {
     local image="$files/vfs.raw" alias_entry
     local test_image fat_lba=$((2048 + fat_reserved)) fat_sectors=$((fat_size * fat_count))
     local raw_crc
     run_directory_fixtures
+    run_remove_directory_fixtures
     printf 'Original RAM bytes' > "$files/no newline.txt"
     raw_crc=$(gzip -n < "$files/no newline.txt" | tail -c 8 | od -An -N4 -t x4 | tr -d ' \n' | tr 'a-f' 'A-F')
     tar --format=ustar -C "$files" -cf "$files/vfs.tar" 'no newline.txt' empty.txt
@@ -519,7 +647,7 @@ check_refused_mkdir() {
         console_check "mkdir /disk/$name" 'short FAT name'
     done
     console_check 'mkdir /disk/missing/child' 'directory not found\.'
-    console_check 'mkdir /ram/child' 'requires a writable FAT32 mount'
+    console_check 'mkdir /ram/child' 'requires a writable FAT32 or ext2 mount'
 }
 
 check_mkdir_cut() {

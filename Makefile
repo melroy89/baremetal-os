@@ -5,11 +5,11 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o runtime.o smp.o vfs.o virtio_net.o)
+OBJECTS := $(addprefix $(BUILD)/,ata.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o rtc.o runtime.o smp.o vfs.o virtio_net.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
 FAT_FIXTURES := $(addprefix $(BUILD)/fat32-,interrupt.elf mkdir-linked.elf fault.elf overlap.elf)
-EXT2_FAULTS := $(addprefix $(BUILD)/ext2-fixture-,ALLOC.elf PUBLISH.elf FINAL.elf BEFORE.elf AFTER.elf)
+EXT2_FAULTS := $(addprefix $(BUILD)/ext2-fixture-,ALLOC.elf PUBLISH.elf READ.elf FINAL.elf BEFORE.elf AFTER.elf CUT4.elf CUT5.elf CUT6.elf)
 RAM     ?= 64M
 SMP     ?= 1
 INITRAMFS ?=
@@ -29,7 +29,7 @@ $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 
 $(BUILD)/kernel.o: $(BUILD)/build_id.inc
 $(BUILD)/ip.o: src/udp.inc src/dhcp.inc src/dns.inc
-$(BUILD)/ext2.o: src/ext2_verify.inc src/ext2_write.inc
+$(BUILD)/ext2.o: src/ext2_verify.inc src/ext2_write.inc src/ext2_remove.inc
 $(BUILD)/fat32.o: src/fat32_check.inc src/fat32_copy.inc
 $(BUILD)/vfs.o: src/vfs_copy.inc src/vfs_read.inc
 $(BUILD)/ext2.o $(BUILD)/fat32.o $(BUILD)/vfs.o: src/volume.inc
@@ -190,13 +190,16 @@ test-network-tap: $(KERNEL)
 
 $(BUILD)/ext2-fixture-BEFORE.o: EXT2_FLAGS := -DCUT=2
 $(BUILD)/ext2-fixture-AFTER.o: EXT2_FLAGS := -DCUT=3
+$(BUILD)/ext2-fixture-CUT4.o: EXT2_FLAGS := -DCUT=4
+$(BUILD)/ext2-fixture-CUT5.o: EXT2_FLAGS := -DCUT=5
+$(BUILD)/ext2-fixture-CUT6.o: EXT2_FLAGS := -DCUT=6
 
 $(BUILD)/ext2-fixture-%.o: tests/ext2_fault.asm | $(BUILD)
 	$(NASM) -f elf64 -D$* $(EXT2_FLAGS) $< -o $@
 
 $(BUILD)/ext2-fixture-%.elf64: $(BUILD)/ext2-fixture-%.o $(OBJECTS) src/linker.ld
 	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
-		--wrap=block_write --wrap=block_flush $(filter %.o,$^) -o $@
+		--wrap=block_read --wrap=block_write --wrap=block_flush $(filter %.o,$^) -o $@
 
 $(BUILD)/ext2-fixture-%.elf: $(BUILD)/ext2-fixture-%.elf64
 	$(OBJCOPY) --strip-all -O elf32-i386 $< $@

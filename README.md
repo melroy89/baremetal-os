@@ -10,7 +10,7 @@ Bare Metal OS is a small operating system written in x86-64 assembly and designe
 - GPT partition inspection and volume mounting, with writable ext2, FAT32, and a built-in RAM filesystem.
 - Browse multiple mounted volumes with `cd` and `ls`, read files with `cat`, and copy them between volumes with `cp`.
 - Multicore startup and tools to inspect CPUs, memory, and PCI devices.
-- IPv4 networking over virtio-net or e1000, with ARP, UDP, `ping`, DHCP, and DNS lookups.
+- IPv4 networking with virtio-net and Intel e1000 adapters, including ARP, UDP, `ping`, DHCP, and DNS lookups.
 
 ## Download
 
@@ -67,10 +67,12 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 | `net info`                 | Show the Ethernet adapter and IPv4 configuration.  |
 | `ls [PATH]`                | List files in RAM or on a mounted volume.          |
 | `cd PATH`, `pwd`           | Change or show the current directory.              |
-| `cat PATH`, `rm PATH`      | Read or remove a file.                             |
+| `cat PATH`                 | Print a file.                                      |
 | `echo [TEXT] > PATH`       | Write text to a file.                              |
 | `touch PATH`               | Create an empty file.                              |
 | `cp SOURCE DEST`           | Copy a file.                                       |
+| `mkdir PATH`               | Create a directory on writable FAT32 or ext2.      |
+| `rm PATH`                  | Remove a file or an empty directory.               |
 | `mount [disk0pN /NAME]`    | List volumes or mount an IDE partition.            |
 | `umount /NAME`             | Unmount a named volume.                            |
 | `uptime`, `log`, `version` | Check runtime, boot milestones, and build details. |

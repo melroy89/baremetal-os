@@ -16,6 +16,7 @@ default rel
 
 extern block_read
 extern vfs_mount_partition
+extern vfs_dir_busy, path_not_directory
 extern block_write
 extern block_flush
 extern console_write
@@ -1026,11 +1027,14 @@ validate_directory_chain:
     pop     rbx
     ret
 
-; rdi = name, esi = parent cluster.
+; rdi = name, esi = parent cluster, edx = require a directory.
 fat_rm:
     cmp     byte [rbp + mount_volume.write_error], 0
     jne     print_write_blocked
     push    rbx
+    push    r12
+    sub     rsp, 8
+    mov     r12d, edx
     mov     ebx, esi
     call    short_name
     jc      .name
@@ -1041,14 +1045,27 @@ fat_rm:
     jnz     .error
     cmp     byte [rel slot_found], 1
     jne     .missing
+    test    byte [rel slot_attr], FAT_ATTR_DIRECTORY
+    jnz     .directory
+    test    r12d, r12d
+    jnz     .not_directory
     call    verify_file_slot
     test    rax, rax
     jnz     .error
+.guards:
     cmp     byte [rel slot_lfn], 0
     jne     .long_name
     call    verify_mutation_tree
     test    rax, rax
     jnz     .error
+    test    byte [rel slot_attr], FAT_ATTR_DIRECTORY
+    jz      .prepare
+    mov     edi, [rel slot_cluster]
+    mov     esi, ebx
+    call    verify_empty_directory
+    test    rax, rax
+    jnz     .error
+.prepare:
     call    prepare_mutation
     test    rax, rax
     jnz     .write_error
@@ -1077,8 +1094,34 @@ fat_rm:
     jnz     .write_error
 .done:
     mov     byte [rbp + mount_volume.pending_write], 0
+    add     rsp, 8
+    pop     r12
     pop     rbx
     ret
+.directory:
+    test    byte [rel slot_attr], FAT_ATTR_READ_ONLY
+    jnz     .read_only
+    test    byte [rel slot_attr], 0xC0 ; Reserved attribute bits.
+    jnz     .bad_directory
+    cmp     dword [rel slot_size], 0
+    jne     .bad_directory
+    mov     edi, [rel slot_cluster]
+    cmp     edi, [rbp + mount_volume.root_cluster]
+    je      .bad_directory
+    call    vfs_dir_busy
+    test    eax, eax
+    jz      .guards
+    lea     rax, [rel directory_busy]
+    jmp     .error
+.read_only:
+    lea     rax, [rel file_read_only]
+    jmp     .error
+.bad_directory:
+    lea     rax, [rel invalid_directory]
+    jmp     .error
+.not_directory:
+    lea     rax, [rel path_not_directory]
+    jmp     .error
 .name:
     lea     rax, [rel invalid_name]
     jmp     .error
@@ -1091,8 +1134,105 @@ fat_rm:
 .write_error:
     mov     byte [rbp + mount_volume.write_error], 1
 .error:
+    add     rsp, 8
+    pop     r12
     pop     rbx
     jmp     print_error
+
+; edi = child head, esi = parent head (zero for the root).
+; verify_mutation_tree has already checked ownership and every mirrored
+; link, including any continuation beyond an end-of-directory marker.
+verify_empty_directory:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    mov     r12d, edi
+    mov     r15d, esi
+    test    r15d, r15d
+    cmovz   r15d, [rbp + mount_volume.root_cluster]
+    call    cluster_lba
+    mov     r13, rax
+    mov     r14d, [rbp + mount_volume.sectors_per_cluster]
+    mov     rdi, r13
+    call    read_sector
+    test    rax, rax
+    jnz     .done
+    lea     rsi, [rel sector_buffer]
+    mov     rax, '.       '
+    cmp     [rsi], rax
+    jne     .invalid
+    cmp     dword [rsi + 8], (FAT_ATTR_DIRECTORY << 24) | 0x202020
+    jne     .invalid
+    cmp     dword [rsi + 28], 0
+    jne     .invalid
+    call    entry_cluster
+    cmp     eax, r12d
+    jne     .invalid
+    add     rsi, FAT_ENTRY_SIZE
+    mov     rax, '..      '
+    cmp     [rsi], rax
+    jne     .invalid
+    cmp     dword [rsi + 8], (FAT_ATTR_DIRECTORY << 24) | 0x202020
+    jne     .invalid
+    cmp     dword [rsi + 28], 0
+    jne     .invalid
+    call    entry_cluster
+    cmp     eax, r15d
+    je      .first_entries
+    test    eax, eax                  ; Root may be encoded as cluster zero.
+    jnz     .invalid
+    cmp     r15d, [rbp + mount_volume.root_cluster]
+    jne     .invalid
+.first_entries:
+    mov     ebx, 2 * FAT_ENTRY_SIZE
+.entry:
+    lea     rsi, [rel sector_buffer]
+    mov     al, [rsi + rbx]
+    test    al, al
+    jz      .empty
+    cmp     al, 0xE5
+    jne     .not_empty
+    add     ebx, FAT_ENTRY_SIZE
+    cmp     ebx, BLOCK_SIZE
+    jb      .entry
+    inc     r13
+    dec     r14d
+    jnz     .sector
+    mov     edi, r12d
+    call    get_link
+    test    rax, rax
+    jnz     .done
+    cmp     edx, FAT_END
+    jae     .empty
+    mov     r12d, edx
+    mov     edi, edx
+    call    cluster_lba
+    mov     r13, rax
+    mov     r14d, [rbp + mount_volume.sectors_per_cluster]
+.sector:
+    mov     rdi, r13
+    call    read_sector
+    test    rax, rax
+    jnz     .done
+    xor     ebx, ebx
+    jmp     .entry
+.invalid:
+    lea     rax, [rel invalid_directory]
+    jmp     .done
+.not_empty:
+    lea     rax, [rel directory_not_empty]
+    jmp     .done
+.empty:
+    xor     eax, eax
+.done:
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
 
 verify_file_slot:
     test    byte [rel slot_attr], 0x10
@@ -1458,6 +1598,9 @@ invalid_chain:      db "Invalid or unsupported FAT32 cluster chain.", 10, 0
 file_read_only:     db "Disk file is read-only.", 10, 0
 name_is_directory:  db "Disk name refers to a directory.", 10, 0
 directory_missing:   db "FAT32 directory not found.", 10, 0
+directory_busy:      db "FAT32 directory is in use.", 10, 0
+directory_not_empty: db "FAT32 directory is not empty.", 10, 0
+invalid_directory:   db "Invalid FAT32 directory metadata.", 10, 0
 duplicate_name:     db "Duplicate FAT32 short name.", 10, 0
 lfn_remove:         db "Cannot remove a FAT32 file with long-name entries.", 10, 0
 root_full:          db "FAT32 directory is full.", 10, 0

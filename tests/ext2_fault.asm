@@ -1,10 +1,22 @@
 ; Disposable-kernel fault at specific ext2 persistence boundaries.
 bits 64
 default rel
-extern __real_block_write, __real_block_flush, console_write_cstr
-global __wrap_block_write, __wrap_block_flush
+extern __real_block_read, __real_block_write, __real_block_flush, console_write_cstr
+global __wrap_block_read, __wrap_block_write, __wrap_block_flush
 
 section .text
+__wrap_block_read:
+%ifdef READ
+    cmp     dword [rel flushes], 2    ; Read the publication sector after mutation.
+    jne     .read
+    cmp     byte [rel failed_read], 0
+    jne     .read
+    mov     byte [rel failed_read], 1
+    jmp     fault
+.read:
+%endif
+    jmp     __real_block_read
+
 __wrap_block_write:
 %ifdef ALLOC
     inc     dword [rel writes]
@@ -53,3 +65,6 @@ cut_msg: db "Test: ext2 flush complete.", 10, 0
 section .bss
 writes: resd 1
 flushes: resd 1
+%ifdef READ
+failed_read: resb 1
+%endif

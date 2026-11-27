@@ -7,6 +7,7 @@ default rel
 
 %define RAM_MOUNT 1
 %define PATH_DEPTH 32
+%define PATH_REMOVE 3
 
 struc location
     .volume: resq 1
@@ -26,7 +27,7 @@ extern fat_write, fat_rm, fat_touch, fat_find_dir, fat_check, fat_repair
 extern fat_mkdir
 extern fat_validate_root
 extern ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
-extern ext_write, ext_touch, ext_finish, fat_finish
+extern ext_write, ext_copy_write, ext_touch, ext_mkdir, ext_rm, ext_finish, fat_finish
 extern console_write, parse_lba, crc32_update, write_hex32_raw
 extern gpt_load, gpt_partition
 extern console_write_cstr, console_putc, str_eq
@@ -34,7 +35,7 @@ extern console_write_cstr, console_putc, str_eq
 section .text
 global command_ls, command_cat, command_rm, command_touch, command_cd, command_pwd
 global command_mkdir
-global vfs_shutdown
+global vfs_shutdown, vfs_dir_busy, path_not_directory
 global vfs_write, command_mount, command_umount, vfs_mount_partition
 global disk_check_volume, disk_repair_volume
 
@@ -97,7 +98,8 @@ command_rm:
     cmp     byte [rdi], 0
     je      rm_missing
     lea     rsi, [rel rm_handlers]
-    jmp     file_command
+    mov     edx, PATH_REMOVE
+    jmp     dispatch_operand
 
 command_mkdir:
     cmp     byte [rdi], 0
@@ -122,6 +124,7 @@ dispatch_operand:
     call    work_location
     lea     rdi, [rel component]
     mov     esi, edx
+    mov     edx, r8d
     cmp     rax, RAM_MOUNT
     je      .ram
     push    rbp
@@ -134,9 +137,13 @@ dispatch_operand:
     pop     rbx
     ret
 .ram:
+    test    edx, edx
+    jnz     .needs_directory
     mov     rax, [rbx]
     pop     rbx
     jmp     rax
+.needs_directory:
+    lea     rax, [rel path_not_directory]
 .error:
     pop     rbx
     jmp     print_error
@@ -180,8 +187,9 @@ vfs_write:
     pop     rbp
     jmp     print_error
 
-; esi = 0 for directory lookup, 1 for a file operand, 2 for mkdir.
-; File and mkdir resolution leave the final name for backend validation.
+; esi = 0 for directory lookup, 1 for a file operand, 2 for mkdir, 3 for rm.
+; Operand lookup leaves the final name for the backend. On success r8d
+; is set for rm with trailing separators and clear for other operands.
 resolve_path:
     push    rbx
     push    r12
@@ -240,13 +248,15 @@ resolve_path:
     jmp     .skip
 .ordinary:
     call    work_location
+    xor     r8d, r8d
     test    r13d, r13d
     jz      .directory
     cmp     r13d, 2
-    jne     .operand_end
+    jb      .operand_end
 .skip_operand_slash:
     cmp     byte [r12], '/'
     jne     .operand_end
+    mov     r8d, 1
     inc     r12
     jmp     .skip_operand_slash
 .operand_end:
@@ -264,6 +274,9 @@ resolve_path:
     lea     eax, [rcx + r14 + 1]
     cmp     eax, LINE_BUF_SIZE
     jae     .long
+    cmp     r13d, PATH_REMOVE
+    je      .success
+    xor     r8d, r8d
     jmp     .success
 .directory:
     test    rax, rax
@@ -372,6 +385,28 @@ work_level:
     mov     rcx, [rel work_path + path_state.depth]
     shl     rcx, 4
     add     rax, rcx
+    ret
+
+; rbp = volume, edi = directory identity. Return true if in the current path.
+vfs_dir_busy:
+    lea     rdx, [rel current_path + path_state.levels]
+    mov     rcx, [rel current_path + path_state.depth]
+.next:
+    test    rcx, rcx
+    jz      .free
+    add     rdx, location_size
+    cmp     rbp, [rdx + location.volume]
+    jne     .advance
+    cmp     edi, [rdx + location.cluster]
+    je      .busy
+.advance:
+    dec     rcx
+    jmp     .next
+.busy:
+    mov     eax, 1
+    ret
+.free:
+    xor     eax, eax
     ret
 
 ; rdi = exact mount name, without slashes.
@@ -801,7 +836,7 @@ mkdir_missing:
     lea     rdi, [rel mkdir_help]
     jmp     console_write_cstr
 mkdir_unsupported:
-    lea     rdi, [rel mkdir_fat_only]
+    lea     rdi, [rel mkdir_mount_required]
     jmp     console_write_cstr
 touch_missing:
     lea     rdi, [rel touch_help]
@@ -814,10 +849,10 @@ ram_name:       db "ram", 0
 disk_name:      db "disk", 0
 cd_help:        db "Usage: cd PATH", 10, 0
 cat_help:       db "Usage: cat FILE", 10, 0
-rm_help:        db "Usage: rm FILE", 10, 0
+rm_help:        db "Usage: rm PATH", 10, 0
 touch_help:     db "Usage: touch PATH", 10, 0
 mkdir_help:     db "Usage: mkdir PATH", 10, 0
-mkdir_fat_only: db "mkdir requires a writable FAT32 mount.", 10, 0
+mkdir_mount_required: db "mkdir requires a writable FAT32 or ext2 mount.", 10, 0
 mount_help:     db "Usage: mount [[-t ext2 [-o ro]] disk0pN /NAME] or umount /NAME", 10, 0
 mount_taken:    db "Mount point is already in use.", 10, 0
 mount_full:     db "No free volume mount slots.", 10, 0
@@ -827,6 +862,7 @@ missing_partition: db "Invalid or missing GPT partition.", 10, 0
 overlapping_mount: db "Partition overlaps an active mount.", 10, 0
 path_missing:   db "Directory not found.", 10, 0
 path_directory: db "Expected a file path, found a directory.", 10, 0
+path_not_directory: db "Trailing slash requires a directory.", 10, 0
 path_long:      db "Path is too long or has too many components.", 10, 0
 
 ext_mounted: db "Ext2 mounted read-only.", 10, 0
@@ -837,9 +873,9 @@ ext_check: db "disk check requires a FAT32 volume.", 10, 0
 
 align 8
 cat_handlers: dq ramfs_cat, fat_cat, ext_cat
-rm_handlers:  dq ramfs_rm, fat_rm, ext_readonly
+rm_handlers:  dq ramfs_rm, fat_rm, ext_rm
 touch_handlers: dq ramfs_touch, fat_touch, ext_touch
-mkdir_handlers: dq mkdir_unsupported, fat_mkdir, mkdir_unsupported
+mkdir_handlers: dq mkdir_unsupported, fat_mkdir, ext_mkdir
 
 section .bss
 alignb 8

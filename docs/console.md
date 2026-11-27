@@ -49,8 +49,8 @@ The console starts at `/`. Use `ls` there to see mounted volumes, or `cd /ram` t
 | `echo [TEXT] > PATH`            | Write text and a newline to a file.                         |
 | `cp SOURCE DEST`                | Copy a file between or within mounted volumes.              |
 | `touch PATH`                    | Create an empty file. Existing files stay unchanged.        |
-| `mkdir PATH`                    | Create one directory on a writable FAT32 volume.            |
-| `rm PATH`                       | Remove a writable file.                                     |
+| `mkdir PATH`                    | Create one directory on a writable FAT32 or ext2 volume.    |
+| `rm PATH`                       | Remove a file or an empty directory.                        |
 | `crc32 FILE`                    | Checksum a file in `/ram` from anywhere.                    |
 | `crc32range OFFSET LENGTH PATH` | Checksum up to 64 MiB of a file using decimal byte offsets. |
 

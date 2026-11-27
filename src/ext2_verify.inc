@@ -10,6 +10,8 @@ ext_verify_allocations:
     push    rbx
     push    r12
     push    r13
+    push    r14
+    sub     rsp, 8
     xor     r12d, r12d
     xor     r13d, r13d
     call    rw_drop_cache
@@ -44,6 +46,8 @@ ext_verify_allocations:
     jne     .invalid
 
     mov     ebx, 1
+    xor     r13d, r13d
+    mov     r14d, [rbp + mount_volume.ext_inodes_group]
 .inodes:
     mov     edi, ebx
     call    rw_test_inode
@@ -55,13 +59,31 @@ ext_verify_allocations:
     call    verify_inode
     test    rax, rax
     jnz     .finish
+    add     r13d, edx
 .next_inode:
     test    ebx, 1023
     jnz     .advance
     call    ip_checkpoint
 .advance:
+    dec     r14d
+    jz      .count_dirs
+    cmp     ebx, [rbp + mount_volume.ext_inodes]
+    jb      .next
+.count_dirs:
+    lea     eax, [rbx - 1]
+    xor     edx, edx
+    div     dword [rbp + mount_volume.ext_inodes_group]
+    mov     edi, eax
+    call    rw_load_group
+    test    rax, rax
+    jnz     .finish
+    cmp     r13d, [rel group_used_dirs]
+    jne     .invalid
     cmp     ebx, [rbp + mount_volume.ext_inodes]
     jae     .ok
+    xor     r13d, r13d
+    mov     r14d, [rbp + mount_volume.ext_inodes_group]
+.next:
     inc     ebx
     jmp     .inodes
 .ok:
@@ -82,6 +104,8 @@ ext_verify_allocations:
 .done:
     mov     qword [rel seen_recent], 0
     mov     rax, r12
+    add     rsp, 8
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -316,7 +340,7 @@ verify_inode:
     mov     rax, [rel dir_inode + ext_inode.size]
     shr     rax, 12
     cmp     r14, rax
-    jae     .ok
+    jae     .directory_ok
     mov     rdi, r14
     lea     rsi, [rel dir_inode]
     call    map_block
@@ -360,7 +384,12 @@ verify_inode:
     jb      .dir_entry
     inc     r14
     jmp     .dir_block
+.directory_ok:
+    mov     edx, 1
+    xor     eax, eax
+    jmp     .done
 .ok:
+    xor     edx, edx
     xor     eax, eax
     jmp     .done
 .bad:

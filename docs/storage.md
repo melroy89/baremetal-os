@@ -18,7 +18,7 @@ For direct QEMU boot, add `-machine pc -drive file=disk.raw,format=raw,if=ide,in
 
 ## Ext2
 
-The ext2 writer creates regular files up to 48 KiB in existing linear directories. Use `touch`, `echo >`, or `cp`. Lookup is case-sensitive. Replacement, deletion, and directory creation are deferred.
+The ext2 writer creates regular files up to 48 KiB with `touch`, `echo >`, and `cp`. Use `echo >` or `cp` to replace an existing file. Replacement updates the modification and change times from a valid UTC hardware clock, with one-second precision. Use `mkdir PATH` to create a directory and `rm PATH` to remove a file or an empty directory. Removing one of several hard links also uses the clock to update the surviving inode’s change time. Lookup is case-sensitive. Linear directories can grow up to 12 direct blocks. Replacement and final removal require direct data blocks.
 
 To format a new ext2 image for the writer, select 4 KiB blocks and the supported feature set.
 
@@ -42,8 +42,7 @@ Run `make test-ext2` for the read, write, and recovery checks. Run `make bench-e
 
 This example assumes GPT partition 1 contains a FAT32 volume.
 
-File commands work in existing FAT32 directories with ASCII 8.3 names. You can read and replace files through short aliases such as `LONGFI~1.TXT`. Files with long-name entries are protected from `rm`.
-Use `mkdir PATH` to create one directory with an 8.3 name.
+File commands work in existing FAT32 directories with ASCII 8.3 names. You can read and replace files through short aliases such as `LONGFI~1.TXT`. Use `mkdir PATH` to create one directory with an 8.3 name. Use `rm PATH` to remove a file or an empty directory. FAT32 entries with long-name records or the read-only attribute are protected from removal, as are the current directory and its ancestors.
 
 ```text
 mount disk0p1 /disk
@@ -53,6 +52,7 @@ mkdir projects
 ls
 cat note.txt
 cp note.txt /ram/note.txt
+rm projects
 cd /
 umount /disk
 ```

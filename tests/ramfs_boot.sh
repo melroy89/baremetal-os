@@ -130,7 +130,7 @@ check_archive() {
     expect_serial 'baremetal> '
 
     printf 'rm\r' >&"$serial_write"
-    expect_serial 'Usage: rm FILE'
+    expect_serial 'Usage: rm PATH'
     expect_serial 'baremetal> '
     printf 'rm hello.txt\r' >&"$serial_write"
     expect_serial 'Archive file is read-only\.'

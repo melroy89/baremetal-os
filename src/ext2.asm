@@ -20,6 +20,7 @@ struc ext_inode
     .size: resq 1
     .mode: resd 1
     .flags: resd 1
+    .links: resd 1
     .blocks: resd 15
     alignb 8
 endstruc
@@ -278,6 +279,8 @@ load_inode:
     cmp     rdx, rax
     ja      .bad
     mov     [r12 + ext_inode.size], rdx
+    movzx   eax, word [rsi + 26]
+    mov     [r12 + ext_inode.links], eax
     lea     rdi, [r12 + ext_inode.blocks]
     add     rsi, 40
     mov     ecx, 15
@@ -547,12 +550,13 @@ scan_dir:
     pop     rbx
     ret
 
-; rdi = name, esi = parent. On success the reader owns a snapshot of this inode.
+; rdi = name, esi = parent. On success return size in rdx and inode in ecx.
 ext_open:
     sub     rsp, 8
     call    scan_dir
     test    rax, rax
     jnz     .done
+    mov     [rsp], edx
     mov     edi, edx
     lea     rsi, [rel file_inode]
     call    load_inode
@@ -563,6 +567,7 @@ ext_open:
     mov     [rel file_volume], rbp
     mov     qword [rel cached_logical], -1
     mov     rdx, [rel file_inode + ext_inode.size]
+    mov     ecx, [rsp]
     jmp     .done
 .type:
     lea     rax, [rel not_regular]
@@ -682,3 +687,4 @@ file_sector: resb BLOCK_SIZE
 
 %include "ext2_verify.inc"
 %include "ext2_write.inc"
+%include "ext2_remove.inc"
