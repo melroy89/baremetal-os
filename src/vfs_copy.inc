@@ -102,39 +102,24 @@ command_cp:
     call    ramfs_write
     jmp     .done
 .to_ext:
-    cmp     byte [rbp + mount_volume.read_only], 0
-    jne     .readonly
-    cmp     r14, 48 * 1024
-    ja      .large_ext
-    mov     r13d, edx
-    cmp     r15, RAM_MOUNT
-    je      .write_ext
-    lea     rbx, [rel copy_ext_buffer]
-    xor     r12d, r12d
-.ext_chunk:
-    cmp     r12, r14
-    jae     .write_ext
-    lea     rdi, [rbx + r12]
-    call    [rel reader_chunk]
-    test    rax, rax
-    jnz     .error
-    add     r12, BLOCK_SIZE
-    jmp     .ext_chunk
-.write_ext:
-    lea     rdi, [rel component]
-    mov     rsi, rbx
+    mov     ecx, edx
     mov     rdx, r14
-    mov     ecx, r13d
     xor     r9d, r9d
     cmp     rbp, r15
     cmove   r9d, [rsp]
+    cmp     r15, RAM_MOUNT
+    jne     .stream_ext
+    mov     rsi, rbx
     call    ext_copy_write
     jmp     .done
-.large_ext:
-    lea     rax, [rel copy_large_ext]
-    jmp     .error
-.readonly:
-    call    ext_readonly
+.stream_ext:
+    cmp     byte [r15 + mount_volume.type], FS_EXT2
+    je      .sparse_ext
+    mov     rsi, [rel reader_chunk]
+    call    ext_copy_stream
+    jmp     .done
+.sparse_ext:
+    call    ext_copy_sparse
     jmp     .done
 .missing_ram:
     call    ramfs_not_found
@@ -225,9 +210,7 @@ section .rodata
 copy_usage:     db "Usage: cp SOURCE DEST", 10, 0
 copy_same_ram:  db "Source and destination are the same file.", 10, 0
 copy_large_ram: db "File is too large for the RAM filesystem.", 10, 0
-copy_large_ext: db "Ext2 write limit is 48 KiB.", 10, 0
 
 section .bss
 alignb 16
 copy_ram_buffer: resb PAGE_SIZE
-copy_ext_buffer: resb 48 * 1024

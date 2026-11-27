@@ -87,12 +87,13 @@ ext_verify_allocations:
     inc     ebx
     jmp     .inodes
 .ok:
-    xor     eax, eax
+    call    verify_xattr_counts
     jmp     .finish
 .invalid:
     lea     rax, [rel rw_allocation_error]
 .finish:
     mov     r12, rax
+    call    free_xattr_records
 .free:
     mov     rdi, [rel seen_head]
     test    rdi, rdi
@@ -254,14 +255,23 @@ verify_inode:
     jnz     .done
     lea     rax, [rel verify_sector]
     add     r12, rax
-    cmp     dword [r12 + 104], 0      ; External EA block is outside this profile.
-    jne     .bad
     movzx   r13d, word [r12]
     and     r13d, 0xF000
     cmp     ebx, EXT_ROOT
     je      .normal
     cmp     ebx, [rbp + mount_volume.ext_first_inode]
     jae     .normal
+    cmp     dword [r12 + 104], 0
+    jne     .bad
+    cmp     ebx, EXT_RESIZE_INODE
+    jne     .ordinary_reserved
+    test    dword [rbp + mount_volume.ext_compat], EXT_COMPAT_RESIZE
+    jz      .ordinary_reserved
+    mov     rdi, r12
+    call    verify_resize_inode
+    xor     edx, edx
+    jmp     .done
+.ordinary_reserved:
     cmp     word [r12], 0
     jne     .bad
     cmp     dword [r12 + 28], 0
@@ -277,8 +287,24 @@ verify_inode:
     je      .bad
     cmp     dword [r12 + 20], 0
     jne     .bad
-    test    dword [r12 + 32], 0x10081C04
+    test    dword [r12 + 32], 0x10080C04
     jnz     .bad
+    mov     eax, [r12 + 28]
+    mov     [rel inode_data_sectors], eax
+    mov     dword [rel inode_owned_blocks], 0
+    mov     edi, [r12 + 104]
+    test    edi, edi
+    jz      .type
+    test    dword [rbp + mount_volume.ext_compat], EXT_COMPAT_XATTR
+    jz      .bad
+    sub     eax, [rbp + mount_volume.ext_sectors]
+    jc      .bad
+    mov     [rel inode_data_sectors], eax
+    call    verify_xattr_reference
+    test    rax, rax
+    jnz     .done
+    inc     dword [rel inode_owned_blocks]
+.type:
     cmp     r13d, EXT_REG
     je      .pointers
     cmp     r13d, EXT_DIR
@@ -294,17 +320,16 @@ verify_inode:
     cmp     r13d, 0xC000
     jne     .bad
 .special:
-    cmp     dword [r12 + 28], 0
+    cmp     dword [rel inode_data_sectors], 0
     jne     .bad
     jmp     .ok
 .symlink:
-    cmp     dword [r12 + 28], 0
+    cmp     dword [rel inode_data_sectors], 0
     jne     .pointers
     cmp     dword [r12 + 4], 60
     ja      .bad
     jmp     .ok
 .pointers:
-    mov     dword [rel inode_owned_blocks], 0
     xor     r14d, r14d
 .pointer:
     mov     edi, [r12 + r14 * 4 + 40]
@@ -323,10 +348,9 @@ verify_inode:
     cmp     r14d, 15
     jb      .pointer
     mov     eax, [rel inode_owned_blocks]
-    cmp     eax, 0xFFFFFFFF / EXT_SECTORS
-    ja      .bad
-    imul    eax, EXT_SECTORS
-    cmp     eax, [r12 + 28]
+    imul    rax, [rbp + mount_volume.ext_sectors]
+    mov     edx, [r12 + 28]
+    cmp     rax, rdx
     jne     .bad
     cmp     r13d, EXT_DIR
     jne     .ok
@@ -338,7 +362,7 @@ verify_inode:
     xor     r14d, r14d
 .dir_block:
     mov     rax, [rel dir_inode + ext_inode.size]
-    shr     rax, 12
+    ext_block_index rax
     cmp     r14, rax
     jae     .directory_ok
     mov     rdi, r14
@@ -354,7 +378,8 @@ verify_inode:
     test    rax, rax
     jnz     .done
     lea     r15, [rel dir_data]
-    lea     r13, [r15 + EXT_BLOCK]
+    mov     r13, r15
+    add     r13, [rbp + mount_volume.ext_block_size]
 .dir_entry:
     movzx   eax, word [r15 + 4]
     cmp     eax, 8
@@ -425,7 +450,7 @@ verify_block_tree:
     call    rw_read_block
     test    rax, rax
     jnz     .done
-    mov     ebx, EXT_PTRS
+    mov     ebx, [rbp + mount_volume.ext_ptrs]
 .next:
     mov     edi, [r13]
     test    edi, edi
@@ -526,5 +551,6 @@ alignb 8
 seen_head: resq 1
 seen_recent: resq 1
 inode_owned_blocks: resd 1
+inode_data_sectors: resd 1
 verify_sector: resb BLOCK_SIZE
 tree_data: resb 3 * EXT_BLOCK

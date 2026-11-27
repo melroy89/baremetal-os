@@ -5,6 +5,7 @@ extern vfs_dir_busy, path_not_directory
 
 ; rdi = name, esi = parent inode, edx = require a directory.
 ext_rm:
+    mov     byte [rel create_resize], 0
     push    rbx
     push    r12
     sub     rsp, 8
@@ -32,17 +33,37 @@ ext_rm:
     jnz     .blocked
     mov     eax, [rel entry_inode + ext_inode.links]
     mov     [rel remove_links], eax
+    mov     dword [rel reclaim_xattr], 0
     mov     dword [rel reclaim_inode], 0
     mov     byte [rel reclaim_is_dir], 0
     cmp     dword [rel entry_inode + ext_inode.mode], EXT_DIR
     je      .directory
     test    r12d, r12d
     jnz     .not_directory
+    cmp     dword [rel entry_inode + ext_inode.mode], EXT_SYMLINK
+    je      .link
     cmp     dword [rel entry_inode + ext_inode.mode], EXT_REG
     jne     .wrong_type
     cmp     eax, 1
     jne     .references
     jmp     .collect
+.link:
+    cmp     eax, 1
+    jne     .references
+    mov     [rel reclaim_inode], ebx
+    mov     edi, ebx
+    call    rw_read_inode_sector
+    test    rax, rax
+    jnz     .error
+    mov     eax, [rcx + 28]
+    cmp     dword [rcx + 104], 0
+    je      .link_data
+    sub     eax, [rbp + mount_volume.ext_sectors]
+.link_data:
+    test    eax, eax
+    jnz     .collect
+    mov     dword [rel reclaim_count], 0
+    jmp     .attributes
 .directory:
     mov     byte [rel reclaim_is_dir], 1
     cmp     dword [rel dir_inode + ext_inode.links], 2
@@ -59,6 +80,11 @@ ext_rm:
 .collect:
     mov     [rel reclaim_inode], ebx
     call    rw_collect_blocks
+    test    rax, rax
+    jnz     .error
+.attributes:
+    mov     edi, ebx
+    call    rw_plan_xattr_release
     test    rax, rax
     jnz     .error
 .references:
@@ -94,20 +120,7 @@ ext_rm:
     jmp     .saved
 .final:
     mov     edi, ebx
-    call    rw_read_inode_sector
-    test    rax, rax
-    jnz     .write_error
-    mov     rdi, rcx
-    mov     ecx, [rbp + mount_volume.ext_inode_size]
-    xor     eax, eax
-    rep     stosb
-    call    rw_save_inode_sector
-    test    rax, rax
-    jnz     .write_error
-    call    ext_flush
-    test    rax, rax
-    jnz     .write_error
-    call    rw_reclaim
+    call    rw_drop_inode
     test    rax, rax
     jnz     .write_error
 .saved:
@@ -118,6 +131,9 @@ ext_rm:
 .error:
     mov     rdi, rax
 .print:
+    push    rdi
+    call    rw_free_plans
+    pop     rdi
     add     rsp, 8
     pop     r12
     pop     rbx
@@ -147,10 +163,36 @@ ext_rm:
     lea     rax, [rel rw_allocation_error]
     jmp     .error
 
+rw_drop_inode:
+    sub     rsp, 8
+    call    rw_read_inode_sector
+    test    rax, rax
+    jnz     .done
+    mov     rdi, rcx
+    mov     ecx, [rbp + mount_volume.ext_inode_size]
+    xor     eax, eax
+    rep     stosb
+    call    rw_save_inode_sector
+    test    rax, rax
+    jnz     .done
+    call    ext_flush
+    test    rax, rax
+    jnz     .done
+    call    rw_release_xattr
+    test    rax, rax
+    jnz     .done
+    call    rw_reclaim
+.done:
+    add     rsp, 8
+    ret
+
 rw_unpublish:
     push    rbx
+    call    rw_clear_parent_index
+    test    rax, rax
+    jnz     .done
     mov     ebx, [rel target_block]
-    shl     rbx, 3
+    imul    rbx, [rbp + mount_volume.ext_sectors]
     mov     eax, [rel target_offset]
     shr     eax, 9
     add     rbx, rax
@@ -301,45 +343,129 @@ rw_reference_record:
 ; Capture the old pointer list before changing the inode. The writable
 ; mount verifier has already proven exclusive ownership of these blocks.
 rw_collect_blocks:
-    mov     eax, [rel entry_inode + ext_inode.blocks + 48]
-    or      eax, [rel entry_inode + ext_inode.blocks + 52]
-    or      eax, [rel entry_inode + ext_inode.blocks + 56]
-    jnz     .indirect
     push    rbx
     push    r12
     push    r13
+    push    r14
+    sub     rsp, 8
     xor     ebx, ebx
-    xor     r12d, r12d
+    xor     r13d, r13d
+    mov     r14d, 1
+    mov     dword [rel reclaim_count], 0
+    lea     r12, [rel entry_inode + ext_inode.blocks]
+.root:
+    mov     edi, [r12 + rbx * 4]
+    test    edi, edi
+    jz      .next
+    xor     esi, esi
+    cmp     ebx, EXT_DIRECT
+    jb      .capture
+    lea     esi, [rbx - EXT_DIRECT + 1]
+.capture:
+    mov     edx, r13d
+    mov     ecx, r14d
+    call    rw_capture_tree
+    test    rax, rax
+    jnz     .done
 .next:
-    lea     rax, [rel entry_inode + ext_inode.blocks]
-    mov     r13d, [rax + rbx * 4]
-    test    r13d, r13d
-    jz      .advance
-    mov     edi, r13d
+    add     r13d, r14d
+    inc     ebx
+    cmp     ebx, 15
+    jae     .ok
+    cmp     ebx, EXT_DIRECT
+    jb      .root
+    imul    r14d, [rbp + mount_volume.ext_ptrs]
+    jmp     .root
+.ok:
+    xor     eax, eax
+.done:
+    add     rsp, 8
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rbx
+    ret
+
+; Capture children before their parent. A resize retains all whole data
+; blocks before the tail and builds a new tree over those existing blocks.
+rw_capture_tree:
+    push    rbx
+    push    r12
+    push    r13
+    push    r14
+    push    r15
+    sub     rsp, 16
+    mov     ebx, edi
+    mov     r12d, esi
+    mov     r15d, edx
+    mov     [rsp], ecx
     call    rw_test_block
     test    rax, rax
     jnz     .done
     test    edx, edx
     jz      .invalid
-    lea     rax, [rel reclaim_blocks]
-    mov     [rax + r12 * 4], r13d
-    inc     r12d
-.advance:
-    inc     ebx
-    cmp     ebx, EXT_DIRECT
-    jb      .next
-    mov     [rel reclaim_count], r12d
-    xor     eax, eax
+    test    r12d, r12d
+    jnz     .pointer
+    cmp     byte [rel create_resize], 0
+    je      .append
+    cmp     r15d, [rel resize_boundary]
+    jb      .done
+    jmp     .append
+.pointer:
+    dec     r12d
+    mov     eax, r12d
+    shl     eax, 12
+    lea     r13, [rel tree_data]
+    add     r13, rax
+    mov     edi, ebx
+    mov     rsi, r13
+    call    rw_read_block
+    test    rax, rax
+    jnz     .done
+    mov     eax, [rsp]
+    xor     edx, edx
+    div     dword [rbp + mount_volume.ext_ptrs]
+    mov     [rsp], eax
+    mov     r14d, [rbp + mount_volume.ext_ptrs]
+.next:
+    mov     edi, [r13]
+    test    edi, edi
+    jz      .skip
+    mov     esi, r12d
+    mov     edx, r15d
+    mov     ecx, [rsp]
+    call    rw_capture_tree
+    test    rax, rax
+    jnz     .done
+.skip:
+    add     r13, 4
+    add     r15d, [rsp]
+    dec     r14d
+    jnz     .next
+.append:
+    mov     esi, ebx
+    call    rw_append_reclaim
     jmp     .done
 .invalid:
     call    rw_invalid
 .done:
+    add     rsp, 16
+    pop     r15
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
     ret
-.indirect:
-    lea     rax, [rel ext_indirect_mutation]
+
+rw_append_reclaim:
+    sub     rsp, 8
+    lea     rdi, [rel reclaim_plan]
+    call    ext_list_append
+    add     rsp, 8
+    test    rax, rax
+    jnz     .done
+    inc     dword [rel reclaim_count]
+.done:
     ret
 
 ; Flush deallocation bits before updating the summary counts.
@@ -386,17 +512,33 @@ rw_release_records:
     push    r13
     mov     r13d, edi
     mov     r12d, [rel reclaim_count]
-    lea     rbx, [rel reclaim_blocks]
+    cmp     r12d, EXT_DIRECT + 1
+    jbe     .individual
+    lea     rdi, [rel reclaim_plan]
+    mov     esi, r12d
+    mov     edx, r13d
+    call    rw_apply_block_runs
+    test    rax, rax
+    jnz     .done
+    jmp     .inode
+.individual:
+    mov     rax, [rel reclaim_plan + ext_list_state.head]
+    lea     rbx, [rax + 8]
 .block:
     test    r12d, r12d
     jz      .inode
     mov     eax, [rbx]
+    add     rbx, 4
+    test    ebx, PAGE_SIZE - 1
+    jnz     .sector
+    mov     rbx, [rbx - PAGE_SIZE]
+    add     rbx, 8
+.sector:
     xor     esi, esi
     mov     edx, r13d
     call    rw_change_bit
     test    rax, rax
     jnz     .done
-    add     rbx, 4
     dec     r12d
     jmp     .block
 .inode:
@@ -417,13 +559,11 @@ section .rodata
 ext_remove_type: db "Expected a regular file or an empty ext2 directory.", 10, 0
 ext_directory_busy: db "Ext2 directory is in use.", 10, 0
 ext_directory_not_empty: db "Ext2 directory is not empty.", 10, 0
-ext_indirect_mutation: db "Removing or replacing ext2 inodes with indirect blocks is unsupported.", 10, 0
 ext_unlink_clock_error: db "Unlinking an ext2 hard link requires a valid UTC hardware clock.", 10, 0
 ext_removed: db "Ext2 entry removed.", 10, 0
 
 section .bss
 alignb 4
-reclaim_blocks: resd EXT_DIRECT
 reclaim_count: resd 1
 reclaim_inode: resd 1
 remove_links: resd 1

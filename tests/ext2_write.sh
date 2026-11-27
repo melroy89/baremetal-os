@@ -37,7 +37,12 @@ check_write() {
     console_check 'cp /ram/exact /ext/Nested/Exact' 'Ext2 file saved\.'
     console_check 'cp /ext/Sparse /ext/Dense' 'Ext2 file saved\.'
     console_check 'cp /ext/ExactBytes /ext/Limit' 'Ext2 file saved\.'
-    console_check 'cp /ext/TooBig /ext/Refused' 'Ext2 write limit is 48 KiB\.'
+    console_check 'cp /ext/Indirect /ext/OneIndirect' 'Ext2 file saved\.'
+    console_check 'cp /ext/Max /ext/LimitIndirect' 'Ext2 file saved\.'
+    console_check 'cp /ext/Max /ext/OneIndirect' 'Ext2 file saved\.'
+    console_check 'echo Small > /ext/OneIndirect' 'Ext2 file saved\.'
+    console_check 'cp /ext/Indirect /ext/Transient' 'Ext2 file saved\.'
+    console_check 'rm /ext/Transient' 'Ext2 entry removed\.'
     local long_name
     printf -v long_name "%0244d" 9
     console_check "echo Grown > /ext/Full/$long_name" "Ext2 file saved\."
@@ -102,20 +107,60 @@ check_cut() {
     expect_serial 'Test: ext2 flush complete\.'
 }
 
-check_dirty_refused() {
-    expect_serial 'baremetal> '
-    console_check 'mount -t ext2 disk0p1 /ext' 'Unsupported or invalid ext2 volume\.'
-}
-
 check_bad_allocation() {
     expect_serial 'baremetal> '
     console_check 'mount -t ext2 disk0p1 /ext' 'Ext2 allocation or ownership could not be verified.'
 }
 
-check_repaired_mount() {
-    mount_ext
-    console_check 'cat /ext/Existing' $'\nOriginal\r?\n'
-    console_check 'umount /ext' 'Ext2 unmounted\.'
+# Each fault needs its own guest and image. The mount checks can share one
+# guest because every snapshot occupies a separate partition.
+check_recovery_mounts() {
+    local index partition
+    expect_serial 'baremetal> '
+    for index in "${!recovery_cases[@]}"; do
+        printf 'Checking ext2 recovery for %s\n' "${recovery_cases[index]}"
+        partition=$((2 * index + 1))
+        console_check "mount -t ext2 disk0p$partition /ext" 'Unsupported or invalid ext2 volume\.'
+        console_check "mount -t ext2 disk0p$((partition + 1)) /ext" 'Ext2 mounted read-write\.'
+        console_check 'cat /ext/Existing' $'\nOriginal\r?\n'
+        console_check 'umount /ext' 'Ext2 unmounted\.'
+    done
+}
+
+queue_dirty_mount() {
+    local index=${#recovery_cases[@]}
+    recovery_cases+=("$1")
+    recovery_offset=$((1 + 24 * index))
+    dirty_hashes+=("$(sha256sum < "$files/result")")
+    dd if="$files/result" of="$files/recovery.raw" bs=1M seek="$recovery_offset" \
+        conv=sparse,notrunc status=none
+}
+
+queue_repaired_mount() {
+    dd if="$files/result" of="$files/recovery.raw" bs=1M seek="$((recovery_offset + 12))" \
+        conv=sparse,notrunc status=none
+}
+
+run_recovery_mounts() {
+    local index partition sector
+    local -a partitions=()
+    for index in "${!recovery_cases[@]}"; do
+        partition=$((2 * index + 1))
+        sector=$(((1 + 24 * index) * 2048))
+        partitions+=(-n "$partition:$sector:+12M"
+            -n "$((partition + 1)):$((sector + 12 * 2048)):+12M")
+    done
+    truncate -s "$((2 + 24 * ${#recovery_cases[@]}))M" "$files/recovery.raw"
+    sgdisk "${partitions[@]}" "$files/recovery.raw" >/dev/null
+    disk="$files/recovery.raw" attach_image 'ext2 dirty mount refusals and repaired remounts' check_recovery_mounts "$kernel"
+
+    for index in "${!recovery_cases[@]}"; do
+        if [[ $(dd if="$files/recovery.raw" bs=1M skip="$((1 + 24 * index))" count=12 status=none |
+            sha256sum) != "${dirty_hashes[index]}" ]]; then
+            printf 'Refused mount modified the image for %s\n' "${recovery_cases[index]}" >&2
+            return 1
+        fi
+    done
 }
 
 attach_image() {
@@ -145,14 +190,18 @@ printf 'Exact bytes' > "$files/exact"
 tar --format=ustar -C "$files" -cf "$files/ram.tar" exact
 truncate -s 9001 "$files/Sparse"
 printf 'end' | dd of="$files/Sparse" bs=1 seek=8998 conv=notrunc status=none
-truncate -s 49152 "$files/ExactBytes"
-printf 'end' | dd of="$files/ExactBytes" bs=1 seek=49149 conv=notrunc status=none
-truncate -s 49153 "$files/TooBig"
+{ head -c 49149 /dev/zero | tr '\000' A; printf end; } > "$files/ExactBytes"
+truncate -s 49153 "$files/Indirect"
+printf x | dd of="$files/Indirect" bs=1 seek=49152 conv=notrunc status=none
+truncate -s 4243456 "$files/Max"
+printf 'end' | dd of="$files/Max" bs=1 seek=4243453 conv=notrunc status=none
+truncate -s 0 "$files/TooBig"
 touch "$files/Empty"
 {
     printf 'mkdir /Nested\nmkdir /Full\nmkdir /FullDir\nmkdir /Unused\nmkdir /EmptyDir\n'
-    printf 'write %s /Existing\nwrite %s /Sparse\nwrite %s /ExactBytes\nwrite %s /TooBig\n' \
-        "$files/Existing" "$files/Sparse" "$files/ExactBytes" "$files/TooBig"
+    printf 'write %s /Existing\nwrite %s /Sparse\nwrite %s /ExactBytes\n' \
+        "$files/Existing" "$files/Sparse" "$files/ExactBytes"
+    printf 'write %s /Indirect\nwrite %s /Max\n'  "$files/Indirect" "$files/Max"
     for name in Replace CopyTime; do
         printf 'write %s /%s\n' "$files/Existing" "$name"
         printf 'set_inode_field /%s mtime @1577836800\nset_inode_field /%s ctime @1577836800\n' "$name" "$name"
@@ -209,7 +258,11 @@ done
 debugfs -R 'cat /Nested/Exact' "$files/result" 2>/dev/null | cmp - "$files/exact"
 debugfs -R 'cat /Dense' "$files/result" 2>/dev/null | cmp - "$files/Sparse"
 debugfs -R 'cat /Limit' "$files/result" 2>/dev/null | cmp - "$files/ExactBytes"
-debugfs -R 'stat /Dense' "$files/result" 2>/dev/null | grep -q 'Blockcount: 24'
+debugfs -R 'cat /OneIndirect' "$files/result" 2>/dev/null | cmp - <(printf 'Small\n')
+debugfs -R 'cat /LimitIndirect' "$files/result" 2>/dev/null | cmp - "$files/Max"
+debugfs -R 'stat /LimitIndirect' "$files/result" 2>/dev/null | grep -q 'Blockcount: 16'
+debugfs -R 'stat /Transient' "$files/result" 2>&1 | grep -q 'File not found'
+debugfs -R 'stat /Dense' "$files/result" 2>/dev/null | grep -q 'Blockcount: 8'
 debugfs -R 'stat /empty' "$files/result" 2>/dev/null | grep -q 'Blockcount: 0'
 printf -v grown_name "%0244d" 9
 debugfs -R "cat /FullDir/$grown_name/Nested/File" "$files/result" 2>/dev/null | cmp - <(printf 'Inside\n')
@@ -248,6 +301,8 @@ sha256sum "$disk" > "$files/invalid.sha"
 attach_image 'ext2 refuses a referenced block marked free' check_bad_allocation "$kernel"
 sha256sum -c --status "$files/invalid.sha"
 
+recovery_cases=()
+dirty_hashes=()
 for fixture in ALLOC PUBLISH READ FINAL BEFORE AFTER; do
     cp --sparse=always "$files/base.raw" "$disk"
     fixture_kernel="$build_dir/ext2-fixture-$fixture.elf"
@@ -255,10 +310,8 @@ for fixture in ALLOC PUBLISH READ FINAL BEFORE AFTER; do
         BEFORE|AFTER) QEMU_TEST_POWER_CUT=1 attach_image "ext2 power cut $fixture" check_cut "$fixture_kernel" ;;
         *) attach_image "ext2 fault $fixture" check_fault "$fixture_kernel" ;;
     esac
-    sha256sum "$disk" > "$files/dirty.sha"
-    attach_image 'ext2 refuses a dirty writable mount' check_dirty_refused "$kernel"
-    sha256sum -c --status "$files/dirty.sha"
     extract_volume
+    queue_dirty_mount "$fixture"
     debugfs -R 'cat /Existing' "$files/result" 2>/dev/null | cmp - "$files/Existing"
     case $fixture in
         FINAL|AFTER) debugfs -R 'cat /new' "$files/result" 2>/dev/null | cmp - <(printf 'Fixture\n') ;;
@@ -268,8 +321,7 @@ for fixture in ALLOC PUBLISH READ FINAL BEFORE AFTER; do
     e2fsck -fy "$files/result" || fsck_status=$?
     (( fsck_status <= 1 ))
     clean_check
-    dd if="$files/result" of="$disk" bs=1M seek=1 conv=notrunc status=none
-    attach_image 'ext2 remounts after offline repair' check_repaired_mount "$kernel"
+    queue_repaired_mount
 done
 
 
@@ -280,10 +332,8 @@ assert_missing() {
 cut_and_extract() {
     cp --sparse=always "$files/base.raw" "$disk"
     QEMU_TEST_POWER_CUT=1 cut_command="$3"         attach_image "$1" check_cut "$build_dir/ext2-fixture-$2.elf"
-    sha256sum "$disk" > "$files/dirty.sha"
-    attach_image 'ext2 refuses a dirty writable mount' check_dirty_refused "$kernel"
-    sha256sum -c --status "$files/dirty.sha"
     extract_volume
+    queue_dirty_mount "$1"
     debugfs -R 'cat /Existing' "$files/result" 2>/dev/null | cmp - "$files/Existing"
 }
 
@@ -292,8 +342,7 @@ repair_and_check() {
     e2fsck -fy "$files/result" || result=$?
     (( result == 0 || result == 1 ))
     clean_check
-    dd if="$files/result" of="$disk" bs=1M seek=1 conv=notrunc status=none
-    attach_image 'ext2 remounts after offline repair' check_repaired_mount "$kernel"
+    queue_repaired_mount
 }
 
 for fixture in BEFORE AFTER CUT5 CUT6; do
@@ -360,6 +409,8 @@ ctime=$(awk '$1 == "ctime:" {print $2}' "$files/alias-stat")
 repair_and_check
 debugfs -R 'cat /Alias' "$files/result" 2>/dev/null | cmp - "$files/Existing"
 
+run_recovery_mounts
+
 # Use the same GPT container with a separately prepared ext2 filesystem.
 install_volume() {
     cp --sparse=always "$files/base.raw" "$disk"
@@ -372,18 +423,21 @@ check_limits() {
     console_check 'mkdir /ext/Immutable/New' 'Ext2 writes are blocked\.'
     console_check 'mkdir /ext/AppendOnly/New' 'Ext2 writes are blocked\.'
     console_check 'mkdir /ext/LinkLimit/New' 'Ext2 parent directory link limit reached\.'
-    console_check "echo Refused > /ext/AtLimit/$grown_name" 'Ext2 directory has no writable slot'
     cmp "$files/mounted.raw" "$disk"
-    local first second
+    console_check "echo Extended > /ext/AtLimit/$grown_name" 'Ext2 file saved\.'
+    local first second extra wide_name
     printf -v first '%0241d' 0
     printf -v second '%0241d' 1
     console_check "rm /ext/AtLimit/$first" 'Ext2 entry removed\.'
-    console_check "echo Still too short > /ext/AtLimit/$reused_name" 'Ext2 directory has no writable slot'
     console_check "rm /ext/AtLimit/$second" 'Ext2 entry removed\.'
     console_check "echo Reused > /ext/AtLimit/$reused_name" 'Ext2 file saved\.'
+    for extra in {1000..1017}; do
+        printf -v wide_name '%0241d' "$extra"
+        console_check "touch /ext/AtLimit/$wide_name" 'touch '
+    done
     console_check 'mkdir /ext/LinkBelow/New' 'Ext2 directory created\.'
     console_check 'mkdir /ext/Wide' 'Ext2 directory created\.'
-    local i wide_name
+    local i
     for ((i = 1; i <= 25; i++)); do
         printf -v wide_name '%0200d' "$i"
         console_check "echo Kept > /ext/Wide/$wide_name" 'Ext2 file saved\.'
@@ -420,9 +474,9 @@ debugfs -R 'stat /AtLimit' "$files/limits" 2>/dev/null | grep -Eq 'Size: 49152$'
 } | debugfs -w -f - "$files/limits" >>"$files/debug.log" 2>&1
 printf -v reused_name '%0245d' 999
 install_volume "$files/limits"
-attach_image 'ext2 legacy dirents, growth limit and parent guards' check_limits "$kernel"
+attach_image 'ext2 legacy dirents, indirect directory growth and parent guards' check_limits "$kernel"
 extract_volume
-debugfs -R 'stat /AtLimit' "$files/result" 2>/dev/null | grep -Eq 'Size: 49152$'
+debugfs -R 'stat /AtLimit' "$files/result" 2>/dev/null | grep -Eq 'Size: 57344$'
 debugfs -R 'stat /Wide' "$files/result" 2>/dev/null | grep -Eq 'Size: 8192$'
 debugfs -R "cat /AtLimit/$reused_name" "$files/result" 2>/dev/null | cmp - <(printf 'Reused\n')
 # The two original 252-byte records span past the first 512-byte sector.
@@ -443,6 +497,22 @@ clean_check
 check_no_blocks() {
     mount_ext
     console_check 'cp /ext/Empty /ext/Existing' 'Ext2 file saved\.'
+    console_check 'umount /ext' 'Ext2 unmounted\.'
+}
+
+check_shrink_full() {
+    mount_ext
+    console_check 'truncate /ext/Filler 49153' 'Ext2 file saved\.'
+    console_check 'stat /ext/Filler' 'Allocated sectors: 112'
+    console_check 'truncate /ext/DenseIndirect 49152' 'Ext2 file saved\.'
+    console_check 'umount /ext' 'Ext2 unmounted\.'
+}
+
+check_shrink_tail_full() {
+    mount_ext
+    console_check 'truncate /ext/Keep 1' 'Ext2 file saved\.'
+    console_check 'stat /ext/Keep' 'Allocated sectors: 8'
+    console_check 'truncate /ext/Keep 4097' 'Ext2 file saved\.'
     console_check 'umount /ext' 'Ext2 unmounted\.'
 }
 
@@ -476,15 +546,28 @@ check_growth_short() {
     console_check 'umount /ext' 'Ext2 unmounted\.'
 }
 
+check_indirect_short() {
+    mount_ext
+    cp "$disk" "$files/mounted.raw"
+    console_check 'cp /ext/DenseIndirect /ext/Existing' 'Ext2 has no free inode or data blocks\.'
+    cmp "$files/mounted.raw" "$disk"
+    console_check 'cat /ext/Existing' $'\nOriginal\r?\n'
+    console_check 'umount /ext' 'Ext2 unmounted\.'
+}
+
 free_count() {
     dumpe2fs -h "$1" 2>/dev/null | awk -v kind="$2" '$1 == "Free" && $2 == kind ":" {print $3}'
 }
 
+head -c 8192 /dev/zero | tr '\000' A > "$files/Keep"
+head -c 49153 /dev/zero | tr '\000' X > "$files/DenseIndirect"
 truncate -s 8M "$files/capacity"
 mke2fs -q -F -t ext2 -b 4096 -g 1024 -N 128 -I 256 -O none,filetype,sparse_super,large_file "$files/capacity"
 {
     printf 'mkdir /Pool\nmkdir /Full\nwrite %s /Filler\nwrite %s /Empty\n' "$files/Empty" "$files/Empty"
     printf 'write %s /Existing\nwrite %s /ExactBytes\n' "$files/Existing" "$files/ExactBytes"
+    printf 'write %s /DenseIndirect\n' "$files/DenseIndirect"
+    printf 'write %s /Keep\n' "$files/Keep"
     for ((i = 0; i < 16; i++)); do
         printf 'write %s /Full/%0241d\n' "$files/Empty" "$i"
     done
@@ -509,6 +592,23 @@ attach_image 'ext2 zero-length overwrite with all blocks and inodes in use' chec
 extract_volume
 clean_check
 debugfs -R 'stat /Existing' "$files/result" 2>/dev/null | grep -Eq 'Size: 0$'
+
+install_volume "$files/capacity"
+attach_image 'ext2 shrinks files without free blocks' check_shrink_full "$kernel"
+extract_volume
+clean_check
+head -c 49152 "$files/DenseIndirect" > "$files/ShrunkIndirect"
+debugfs -R 'cat /DenseIndirect' "$files/result" 2>/dev/null | cmp - "$files/ShrunkIndirect"
+debugfs -R 'stat /Filler' "$files/result" 2>/dev/null | grep -q 'Blockcount: 112'
+
+install_volume "$files/capacity"
+attach_image 'ext2 shrinks and regrows a partial block on a full volume' check_shrink_tail_full "$kernel"
+extract_volume
+clean_check
+printf A > "$files/Shrunk"
+truncate -s 4097 "$files/Shrunk"
+debugfs -R 'cat /Keep' "$files/result" 2>/dev/null | cmp - "$files/Shrunk"
+[[ $(free_count "$files/result" blocks) == 1 ]]
 
 # Free blocks from two groups, six in the first and five or six in the
 # second. No group alone can satisfy the 12-block overwrite.
@@ -550,12 +650,19 @@ attach_image 'ext2 48 KiB create refused without a thirteenth block for director
 extract_volume
 clean_check
 
+debugfs -w -R 'punch /Filler 6 6' "$files/free" >>"$files/debug.log" 2>&1
+[[ $(free_count "$files/free" blocks) == 13 ]]
+install_volume "$files/free"
+attach_image 'ext2 refuses data allocation without the indirect table block' check_indirect_short "$kernel"
+extract_volume
+clean_check
+
 check_ambiguous() {
     mount_ext
     cp "$disk" "$files/mounted.raw"
     console_check 'echo Refused > /ext/Duplicate/Early' 'Duplicate ext2 directory entries\.'
     console_check 'rm /ext/Duplicate/Early' 'Duplicate ext2 directory entries\.'
-    console_check 'touch /ext/Malformed/New' 'Ext2 allocation or ownership could not be verified\.'
+    console_check 'touch /ext/Malformed/New' 'Invalid ext2 metadata or block pointer\.'
     cmp "$files/mounted.raw" "$disk"
     console_check 'echo Allowed > /ext/Valid' 'Ext2 file saved\.'
     console_check 'umount /ext' 'Ext2 unmounted\.'

@@ -8,6 +8,8 @@ default rel
 %define RAM_MOUNT 1
 %define PATH_DEPTH 32
 %define PATH_REMOVE 3
+%define PATH_NOFOLLOW 4
+%define PATH_MOVE 5
 
 struc location
     .volume: resq 1
@@ -27,7 +29,7 @@ extern fat_write, fat_rm, fat_touch, fat_find_dir, fat_check, fat_repair
 extern fat_mkdir
 extern fat_validate_root
 extern ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
-extern ext_write, ext_copy_write, ext_touch, ext_mkdir, ext_rm, ext_finish, fat_finish
+extern ext_write, ext_copy_write, ext_copy_stream, ext_copy_sparse, ext_touch, ext_mkdir, ext_rm, ext_finish, fat_finish
 extern console_write, parse_lba, crc32_update, write_hex32_raw
 extern gpt_load, gpt_partition
 extern block_selected, block_writable
@@ -199,6 +201,7 @@ resolve_path:
     push    r15
     mov     r12, rdi
     mov     r13d, esi
+    mov     byte [rel symlink_budget], 40
     lea     rbx, [rel work_path]
     cmp     byte [r12], '/'
     je      .root
@@ -249,11 +252,64 @@ resolve_path:
     jmp     .skip
 .ordinary:
     call    work_location
+    cmp     rax, RAM_MOUNT
+    jbe     .operand
+    cmp     byte [rax + mount_volume.type], FS_EXT2
+    jne     .operand
+    cmp     r13d, 1
+    jbe     .probe_link
+    mov     rcx, r12
+.link_suffix:
+    cmp     byte [rcx], '/'
+    jne     .link_end
+    inc     rcx
+    jmp     .link_suffix
+.link_end:
+    cmp     byte [rcx], 0
+    je      .operand
+.probe_link:
+    push    rbp
+    mov     rbp, rax
+    mov     esi, edx
+    lea     rdi, [rel component]
+    lea     rdx, [rel symlink_target]
+    call    ext_try_symlink
+    pop     rbp
+    test    rax, rax
+    jnz     .done
+    test    edx, edx
+    jz      .operand
+    sub     byte [rel symlink_budget], 1
+    jc      .links
+    lea     rdi, [rel symlink_target]
+    lea     rsi, [rdi + rdx]
+.link_append:
+    mov     al, [r12]
+    cmp     edx, LINE_BUF_SIZE
+    jae     .long
+    mov     [rsi], al
+    inc     rsi
+    inc     r12
+    inc     edx
+    test    al, al
+    jnz     .link_append
+    mov     rsi, rdi
+    lea     rdi, [rel symlink_path]
+    mov     r12, rdi
+    mov     ecx, edx
+    rep     movsb
+    cmp     byte [r12], '/'
+    je      .root
+    jmp     .skip
+.operand:
+    call    work_location
     xor     r8d, r8d
     test    r13d, r13d
     jz      .directory
     cmp     r13d, 2
     jb      .operand_end
+    cmp     r13d, PATH_NOFOLLOW
+    je      .operand_end
 .skip_operand_slash:
     cmp     byte [r12], '/'
     jne     .operand_end
@@ -276,6 +332,8 @@ resolve_path:
     cmp     eax, LINE_BUF_SIZE
     jae     .long
     cmp     r13d, PATH_REMOVE
+    je      .success
+    cmp     r13d, PATH_MOVE
     je      .success
     xor     r8d, r8d
     jmp     .success
@@ -361,6 +419,9 @@ resolve_path:
     jmp     .done
 .long:
     lea     rax, [rel path_long]
+    jmp     .done
+.links:
+    lea     rax, [rel symlink_loop]
     jmp     .done
 .missing_directory:
     lea     rax, [rel path_missing]
@@ -908,3 +969,4 @@ component:    resb LINE_BUF_SIZE
 %include "vfs_copy.inc"
 %include "vfs_read.inc"
 %include "vfs_move.inc"
+%include "vfs_namespace.inc"

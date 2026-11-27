@@ -1,12 +1,10 @@
 ; Ordered ext2 mutations. Publish names and inode pointers only after
 ; their backing allocations are durable.
-%define EXT_DIRECT 12
 %define EXT_LINK_MAX 32000
 %define EXT_PROTECTED_FLAGS 0x30     ; Immutable or append-only.
-%define EXT_WRITE_MAX (EXT_DIRECT * EXT_BLOCK)
 
 section .text
-global ext_write, ext_copy_write, ext_touch, ext_finish, ext_mkdir
+global ext_write, ext_copy_write, ext_copy_stream, ext_copy_sparse, ext_touch, ext_finish, ext_mkdir
 extern rtc_unix_seconds
 
 rw_drop_cache:
@@ -27,7 +25,7 @@ rw_load_group:
     mov     ebx, edi
     mov     eax, edi
     shr     edi, 4
-    add     edi, EXT_SECTORS
+    add     edi, [rbp + mount_volume.ext_gdt_sector]
     mov     [rel group_desc_sector], edi
     and     eax, 15
     shl     eax, 5
@@ -42,6 +40,7 @@ rw_load_group:
     mov     ecx, [rbp + mount_volume.ext_blocks_group]
     mov     r13d, ebx
     imul    r13d, ecx
+    add     r13d, [rbp + mount_volume.ext_first_data]
     mov     [rel group_start], r13d
     mov     eax, [rbp + mount_volume.ext_blocks]
     sub     eax, r13d
@@ -148,6 +147,7 @@ group_has_super:
     ret
 .yes:
     mov     eax, [rbp + mount_volume.ext_gdt_blocks]
+    add     eax, [rbp + mount_volume.ext_reserved_gdt]
     inc     eax
     ret
 
@@ -157,9 +157,9 @@ group_has_super:
     push    r12
     push    r13
     mov     ebx, edi
-    shl     rbx, 3
+    imul    rbx, [rbp + mount_volume.ext_sectors]
     mov     r12, rsi
-    mov     r13d, EXT_SECTORS
+    mov     r13d, [rbp + mount_volume.ext_sectors]
 .next:
     mov     rdi, rbx
     mov     rsi, r12
@@ -228,6 +228,8 @@ rw_test_block:
     cmp     edi, [rbp + mount_volume.ext_blocks]
     jae     rw_invalid
     mov     eax, edi
+    sub     eax, [rbp + mount_volume.ext_first_data]
+    jc      rw_invalid
     xor     edx, edx
     div     dword [rbp + mount_volume.ext_blocks_group]
     push    rbx
@@ -259,7 +261,7 @@ rw_inode_location:
     jnz     .done
     imul    ebx, [rbp + mount_volume.ext_inode_size]
     mov     edx, [rel group_table]
-    shl     rdx, 3
+    imul    rdx, [rbp + mount_volume.ext_sectors]
     mov     ecx, ebx
     shr     ebx, 9
     add     rdx, rbx
@@ -344,10 +346,20 @@ ext_touch:
 ext_mkdir:
     mov     ecx, esi
     xor     esi, esi
-    mov     edx, EXT_BLOCK
+    mov     edx, [rbp + mount_volume.ext_block_size]
     mov     r8d, 2
     jmp     ext_create_plain
 
+ext_symlink:
+    mov     r8d, 4
+    jmp     ext_create_plain
+
+ext_copy_sparse:
+    mov     r8d, 5
+    jmp     ext_create
+ext_copy_stream:
+    mov     r8d, 3                    ; rsi is a sector reader, not a payload address.
+    jmp     ext_create
 ext_copy_write:
     xor     r8d, r8d
     jmp     ext_create
@@ -367,13 +379,43 @@ ext_create:
     mov     r14d, ecx
     mov     r15d, r8d
     mov     [rel copy_source_inode], r9d
+    mov     qword [rel create_reader], 0
+    mov     byte [rel create_sparse], 0
+    mov     byte [rel create_resize], 0
+    cmp     r15d, 5
+    jb      .reader_mode
+    mov     byte [rel create_sparse], 1
+    cmp     r15d, 6
+    sete    byte [rel create_resize]
+.reader_mode:
+    cmp     r15d, 3
+    jne     .mode_ready
+    mov     [rel create_reader], rsi
+.mode_ready:
     cmp     byte [rbp + mount_volume.read_only], 0
     jne     .readonly
     cmp     byte [rbp + mount_volume.write_error], 0
     jne     .blocked
-    cmp     r13, EXT_WRITE_MAX
+    mov     rax, [rbp + mount_volume.ext_max_blocks]
+    imul    rax, [rbp + mount_volume.ext_block_size]
+    mov     rdx, EXT_4K_MAX_SIZE
+    cmp     rax, rdx
+    cmova   rax, rdx
+    cmp     r13, rax
     ja      .large
+    cmp     r13, 0x7FFFFFFF
+    jbe     .size_ok
+    test    dword [rbp + mount_volume.ext_features], EXT_LARGE_FILE << 16
+    jz      .large
+.size_ok:
     mov     byte [rel create_type], 1
+    cmp     r15d, 4
+    jne     .directory_type
+    cmp     r13, [rbp + mount_volume.ext_block_size]
+    jae     .large
+    mov     byte [rel create_type], 7
+    jmp     .inspect
+.directory_type:
     cmp     r15d, 2
     jne     .inspect
     mov     byte [rel create_type], 2
@@ -393,10 +435,9 @@ ext_create:
     cmp     dword [rel dir_inode + ext_inode.links], EXT_LINK_MAX
     jae     .link_limit
 .plan:
-    mov     eax, r13d
-    add     eax, EXT_BLOCK - 1
-    shr     eax, 12
-    mov     [rel create_block_count], eax
+    call    rw_plan_file
+    test    rax, rax
+    jnz     .error
     mov     byte [rel create_inode_needed], 1
     call    rw_plan_growth
     test    rax, rax
@@ -412,11 +453,14 @@ ext_create:
     test    rax, rax
     jnz     .error
 .grow:
+    call    rw_clear_parent_index
+    test    rax, rax
+    jnz     .write_error
     call    rw_grow_directory
     test    rax, rax
     jnz     .write_error
 
-    mov     [rel create_size], r13d
+    mov     [rel create_size], r13
     mov     [rel create_data], r12
     cmp     r15d, 2
     jne     .payload
@@ -428,6 +472,12 @@ ext_create:
     call    rw_reserve_allocations
     test    rax, rax
     jnz     .write_error
+    cmp     byte [rel create_has_pointers], 0
+    je      .new_inode
+    call    ext_flush
+    test    rax, rax
+    jnz     .write_error
+.new_inode:
     mov     edi, [rel create_inode]
     call    rw_write_inode
     test    rax, rax
@@ -465,6 +515,8 @@ ext_create:
     cmove   rdi, rax
     jmp     .print
 .existing:
+    cmp     r15d, 4
+    je      .occupied
     cmp     r15d, 2
     je      .occupied
     mov     edi, edx
@@ -474,22 +526,28 @@ ext_create:
     jnz     .error
     cmp     dword [rel entry_inode + ext_inode.mode], EXT_REG
     jne     .occupied
-    test    r15d, r15d
-    jnz     .done
+    cmp     r15d, 1
+    je      .done
     mov     eax, [rel target_inode]
     cmp     eax, [rel copy_source_inode]
     je      .same_file
     test    dword [rel entry_inode + ext_inode.flags], EXT_PROTECTED_FLAGS
     jnz     .blocked
+    cmp     byte [rel create_resize], 0
+    je      .plan_replacement
+    cmp     r13, [rel entry_inode + ext_inode.size]
+    jb      .shorten
+    je      .saved
+.plan_replacement:
+    call    rw_plan_file
+    test    rax, rax
+    jnz     .error
     call    rw_collect_blocks
     test    rax, rax
     jnz     .error
     mov     dword [rel reclaim_inode], 0
     mov     byte [rel reclaim_is_dir], 0
-    mov     eax, r13d
-    add     eax, EXT_BLOCK - 1
-    shr     eax, 12
-    mov     [rel create_block_count], eax
+    mov     eax, [rel create_owned_count]
     mov     [rel create_total], eax
     mov     byte [rel create_inode_needed], 0
     call    rw_select_free
@@ -498,7 +556,7 @@ ext_create:
     call    rtc_unix_seconds
     jc      .clock_error
     mov     [rel replace_time], eax
-    mov     [rel create_size], r13d
+    mov     [rel create_size], r13
     mov     [rel create_data], r12
     call    rw_write_data
     test    rax, rax
@@ -519,8 +577,21 @@ ext_create:
     call    rw_reclaim
     test    rax, rax
     jnz     .write_error
+.saved:
     lea     rdi, [rel ext_saved]
     jmp     .print
+.shorten:
+    mov     [rel create_size], r13
+    call    rw_plan_shrink
+    test    rax, rax
+    jnz     .error
+    call    rtc_unix_seconds
+    jc      .clock_error
+    mov     [rel replace_time], eax
+    call    rw_publish_shrink
+    test    rax, rax
+    jnz     .write_error
+    jmp     .saved
 .clock_error:
     lea     rax, [rel ext_clock_error]
     jmp     .error
@@ -537,6 +608,7 @@ ext_create:
 .print:
     call    console_write_cstr
 .done:
+    call    rw_free_plans
     pop     r15
     pop     r14
     pop     r13
@@ -597,10 +669,11 @@ rw_prepare_target:
 rw_init_directory_block:
     lea     rdi, [rel dir_data]
     xor     eax, eax
-    mov     ecx, EXT_BLOCK / 8
+    mov     ecx, [rbp + mount_volume.ext_block_size]
+    shr     ecx, 3
     rep     stosq
     lea     rdi, [rel dir_data]
-    mov     ecx, EXT_SECTORS
+    mov     ecx, [rbp + mount_volume.ext_sectors]
 .record:
     mov     word [rdi + 4], BLOCK_SIZE
     add     rdi, BLOCK_SIZE
@@ -734,7 +807,7 @@ rw_walk_dir:
     xor     r13d, r13d
 .block:
     mov     rax, [rel dir_inode + ext_inode.size]
-    shr     rax, 12
+    ext_block_index rax
     cmp     r13, rax
     jae     .ok
     mov     rdi, r13
@@ -752,7 +825,9 @@ rw_walk_dir:
     jnz     .done
     xor     ebx, ebx
 .record:
-    cmp     ebx, EXT_BLOCK - 12
+    mov     eax, [rbp + mount_volume.ext_block_size]
+    sub     eax, 12
+    cmp     ebx, eax
     ja      .invalid
     lea     rdi, [rel dir_data]
     add     rdi, rbx
@@ -762,7 +837,7 @@ rw_walk_dir:
     test    r15b, 3
     jnz     .invalid
     lea     eax, [rbx + r15]
-    cmp     eax, EXT_BLOCK
+    cmp     eax, [rbp + mount_volume.ext_block_size]
     ja      .invalid
     mov     eax, [rdi]
     test    eax, eax
@@ -798,7 +873,7 @@ rw_walk_dir:
     test    rax, rax
     jnz     .done
     add     ebx, r15d
-    cmp     ebx, EXT_BLOCK
+    cmp     ebx, [rbp + mount_volume.ext_block_size]
     jb      .record
     call    ip_checkpoint
     inc     r13
@@ -904,7 +979,7 @@ rw_name_record:
     and     r10d, BLOCK_SIZE - 1
     mov     [rel slot_before_offset], r10d
     shr     esi, 9
-    shl     r9, 3
+    imul    r9, [rbp + mount_volume.ext_sectors]
     add     r9, rsi
     mov     [rel create_slot_sector], r9
 .done:
@@ -914,17 +989,93 @@ rw_name_record:
     lea     rax, [rel ext_duplicate]
     ret
 
+; Data blocks come first, then the indirect table and any parent extension.
+; Return the number of blocks owned by the file itself.
+rw_plan_file:
+    mov     [rel create_size], r13
+    cmp     byte [rel create_sparse], 0
+    jne     rw_plan_sparse
+    sub     rsp, 8
+    call    rw_plan_payload
+    lea     rsp, [rsp + 8]
+    jc      .too_large
+    xor     eax, eax
+    ret
+.too_large:
+    lea     rax, [rel ext_write_large]
+    ret
+
+rw_plan_payload:
+    mov     eax, [rbp + mount_volume.ext_block_mask]
+    add     rax, r13
+    ext_block_index rax
+    cmp     byte [rel create_type], 7
+    jne     .count
+    cmp     r13d, 60
+    jae     .count
+    xor     eax, eax
+.count:
+    mov     [rel create_block_count], eax
+    cmp     eax, EXT_DIRECT
+    seta    byte [rel create_has_pointers]
+    mov     r8d, eax
+    cmp     eax, EXT_DIRECT
+    jbe     .total
+    sub     eax, EXT_DIRECT
+    mov     r9d, eax
+    mov     ecx, [rbp + mount_volume.ext_ptrs]
+    mov     r10d, ecx
+    mov     r11d, 1
+.region:
+    mov     eax, r9d
+    cmp     eax, r10d
+    cmova   eax, r10d
+    sub     r9d, eax
+    mov     esi, r11d
+.nodes:
+    lea     eax, [rax + rcx - 1]
+    xor     edx, edx
+    div     ecx
+    add     r8d, eax
+    dec     esi
+    jnz     .nodes
+    test    r9d, r9d
+    jz      .total
+    inc     r11d
+    imul    r10d, ecx
+    jmp     .region
+.total:
+    mov     eax, r8d
+    imul    rax, [rbp + mount_volume.ext_sectors]
+    shr     rax, 32
+    jnz     .overflow
+    mov     [rel create_owned_count], r8d
+    mov     eax, r8d
+    clc
+    ret
+.overflow:
+    stc
+    ret
+
 ; Allocate a distinct block for the parent only if there was no safe slot.
 rw_plan_growth:
     mov     dword [rel growth_index], -1
-    mov     eax, [rel create_block_count]
+    mov     dword [rel growth_depth], 0
+    mov     dword [rel growth_old_count], 0
+    mov     eax, [rel create_owned_count]
     mov     [rel create_total], eax
     cmp     qword [rel create_slot_sector], -1
     jne     .done
     mov     rax, [rel dir_inode + ext_inode.size]
-    shr     rax, 12
-    cmp     rax, EXT_DIRECT
+    add     rax, [rbp + mount_volume.ext_block_size]
+    shr     rax, 32
+    jnz     .full
+    mov     rax, [rel dir_inode + ext_inode.size]
+    ext_block_index rax
+    cmp     rax, [rbp + mount_volume.ext_max_blocks]
     jae     .full
+    cmp     eax, EXT_DIRECT
+    jae     .indirect
     lea     rcx, [rel dir_inode + ext_inode.blocks]
     cmp     dword [rcx + rax * 4], 0
     jne     rw_invalid
@@ -933,6 +1084,9 @@ rw_plan_growth:
 .done:
     xor     eax, eax
     ret
+.indirect:
+    mov     edi, eax
+    jmp     rw_plan_directory_path
 .full:
     lea     rax, [rel ext_slot_full]
     ret
@@ -944,9 +1098,11 @@ rw_grow_directory:
     ret
 .grow:
     push    rbx
-    mov     eax, [rel create_block_count]
-    lea     rdx, [rel create_blocks]
-    mov     ebx, [rdx + rax * 4]
+    lea     rdi, [rel create_plan]
+    mov     esi, [rel create_owned_count]
+    call    ext_list_cursor
+    mov     ebx, [rax]
+    mov     [rel growth_root], ebx
     call    rw_init_directory_block
     mov     edi, ebx
     lea     rsi, [rel dir_data]
@@ -959,7 +1115,14 @@ rw_grow_directory:
     call    rw_change_bit
     test    rax, rax
     jnz     .done
-    mov     edi, -1
+    cmp     dword [rel growth_depth], 0
+    je      .allocate_count
+    call    rw_write_directory_path
+    test    rax, rax
+    jnz     .done
+.allocate_count:
+    mov     edi, [rel growth_depth]
+    not     edi
     xor     esi, esi
     call    rw_adjust_super
     test    rax, rax
@@ -972,16 +1135,28 @@ rw_grow_directory:
     test    rax, rax
     jnz     .done
     mov     eax, [rel growth_index]
-    mov     [rcx + 40 + rax * 4], ebx
-    add     dword [rcx + 4], EXT_BLOCK
-    add     dword [rcx + 28], EXT_SECTORS
+    mov     esi, [rel growth_root]
+    mov     [rcx + 40 + rax * 4], esi
+    mov     eax, [rbp + mount_volume.ext_block_size]
+    add     [rcx + 4], eax
+    mov     eax, [rel growth_depth]
+    inc     eax
+    sub     eax, [rel growth_old_count]
+    imul    eax, [rbp + mount_volume.ext_sectors]
+    add     [rcx + 28], eax
     call    rw_save_inode_sector
     test    rax, rax
     jnz     .done
     call    ext_flush
     test    rax, rax
     jnz     .done
-    shl     rbx, 3
+    cmp     dword [rel growth_old_count], 0
+    je      .slot
+    call    rw_release_directory_path
+    test    rax, rax
+    jnz     .done
+.slot:
+    imul    rbx, [rbp + mount_volume.ext_sectors]
     mov     [rel create_slot_sector], rbx
     mov     dword [rel slot_new_offset], 0
     mov     dword [rel slot_new_length], BLOCK_SIZE
@@ -1046,8 +1221,13 @@ rw_select_free:
     jc      .next_bit
     mov     eax, [rel group_start]
     add     eax, ecx
-    lea     rdx, [rel create_blocks]
-    mov     [rdx + r12 * 4], eax
+    push    rcx
+    mov     esi, eax
+    lea     rdi, [rel create_plan]
+    call    ext_list_append
+    pop     rcx
+    test    rax, rax
+    jnz     .done
     inc     r12d
     cmp     r12d, [rel create_total]
     je      .group_done
@@ -1087,34 +1267,101 @@ rw_write_data:
     push    r14
     push    r15
     mov     r12, [rel create_data]
-    mov     r13d, [rel create_size]
-    lea     r14, [rel create_blocks]
+    mov     r13, [rel create_size]
+    mov     rax, [rel create_plan + ext_list_state.head]
+    lea     r14, [rax + 8]
     mov     r15d, [rel create_block_count]
+    mov     rax, [rel sparse_plan + ext_list_state.head]
+    add     rax, 8
+    mov     [rel sparse_payload_cursor], rax
 .block:
     xor     eax, eax
     test    r15d, r15d
-    jz      .done
-    mov     ebx, [r14]
-    shl     rbx, 3
+    jz      .mapping
+    mov     eax, [r14]
     add     r14, 4
+    test    r14d, PAGE_SIZE - 1
+    jnz     .block_number
+    mov     r14, [r14 - PAGE_SIZE]
+    add     r14, 8
+.block_number:
+    mov     ebx, eax
+    imul    rbx, [rbp + mount_volume.ext_sectors]
+    cmp     byte [rel create_sparse], 0
+    je      .block_ready
+    cmp     byte [rel create_resize], 0
+    je      .sparse_list
+    mov     eax, [rel resize_tail]
+    jmp     .sparse_offset
+.sparse_list:
+    lea     rdi, [rel sparse_payload_cursor]
+    call    ext_list_next
+.sparse_offset:
+    imul    rax, [rbp + mount_volume.ext_block_size]
+    mov     [rel sparse_payload_offset], rax
+    mov     r13, [rel create_size]
+    sub     r13, rax
+.block_ready:
     dec     r15d
-    mov     eax, EXT_SECTORS
+    mov     eax, [rbp + mount_volume.ext_sectors]
     push    rax
     sub     rsp, 8
 .sector:
     lea     rdi, [rel write_sector_buffer]
+    cmp     byte [rel create_sparse], 0
+    jne     .sparse_sector
+    cmp     qword [rel create_reader], 0
+    je      .memory
+    test    r13, r13
+    jz      .padding
+    call    [rel create_reader]
+    jmp     .stream_read
+.sparse_sector:
+    xor     eax, eax
+    mov     ecx, BLOCK_SIZE / 8
+    rep     stosq
+    mov     rsi, [rel sparse_payload_offset]
+    add     qword [rel sparse_payload_offset], BLOCK_SIZE
+    mov     rdx, [rel sparse_source_size]
+    sub     rdx, rsi
+    jbe     .write_sector
+    mov     eax, BLOCK_SIZE
+    cmp     rdx, rax
+    cmova   rdx, rax
+    lea     rdi, [rel write_sector_buffer]
+    call    ext_read_at
+    test    rax, rax
+    jnz     .block_done
+    jmp     .write_sector
+.stream_read:
+    test    rax, rax
+    jnz     .block_done
+    lea     rdi, [rel write_sector_buffer]
+    mov     ecx, BLOCK_SIZE
+    cmp     r13, rcx
+    cmovb   rcx, r13
+    sub     r13, rcx
+    add     rdi, rcx
+    jmp     .pad_sector
+.padding:
+    xor     ecx, ecx
+    jmp     .pad_sector
+.memory:
     mov     rsi, r12
     mov     ecx, BLOCK_SIZE
-    cmp     r13d, ecx
-    cmovb   ecx, r13d
+    cmp     r13, rcx
+    cmovb   rcx, r13
     mov     edx, ecx
     rep     movsb
     add     r12, rdx
-    sub     r13d, edx
-    mov     ecx, BLOCK_SIZE
-    sub     ecx, edx
+    sub     r13, rdx
+    mov     ecx, edx
+.pad_sector:
+    neg     ecx
+    add     ecx, BLOCK_SIZE
     xor     eax, eax
     rep     stosb
+.write_sector:
     mov     rdi, rbx
     lea     rsi, [rel write_sector_buffer]
     call    rw_write_sector
@@ -1127,6 +1374,9 @@ rw_write_data:
     add     rsp, 16
     test    rax, rax
     jz      .block
+    jmp     .done
+.mapping:
+    call    rw_write_mapping
 .done:
     pop     r15
     pop     r14
@@ -1149,22 +1399,37 @@ rw_reserve_allocations:
     test    rax, rax
     jnz     .done
 .init_blocks:
-    lea     rbx, [rel create_blocks]
-    mov     r12d, [rel create_block_count]
+    mov     rax, [rel create_plan + ext_list_state.head]
+    lea     rbx, [rax + 8]
+    mov     r12d, [rel create_owned_count]
+    cmp     r12d, EXT_DIRECT + 1
+    jbe     .block
+    lea     rdi, [rel create_plan]
+    mov     esi, r12d
+    xor     edx, edx
+    call    rw_apply_block_runs
+    test    rax, rax
+    jnz     .done
+    jmp     .super
 .block:
     test    r12d, r12d
     jz      .super
     mov     eax, [rbx]
+    add     rbx, 4
+    test    ebx, PAGE_SIZE - 1
+    jnz     .sector
+    mov     rbx, [rbx - PAGE_SIZE]
+    add     rbx, 8
+.sector:
     xor     esi, esi
     xor     edx, edx
     call    rw_change_bit
     test    rax, rax
     jnz     .done
-    add     rbx, 4
     dec     r12d
     jmp     .block
 .super:
-    mov     edi, [rel create_block_count]
+    mov     edi, [rel create_owned_count]
     neg     edi
     xor     esi, esi
     test    r13d, r13d
@@ -1219,6 +1484,10 @@ rw_change_bit:
     mov     ecx, [rbp + mount_volume.ext_blocks_group]
     test    esi, esi
     cmovnz  ecx, [rbp + mount_volume.ext_inodes_group]
+    jnz     .divide
+    sub     eax, [rbp + mount_volume.ext_first_data]
+    jc      .bad
+.divide:
     xor     edx, edx
     div     ecx
     mov     ebx, edx
@@ -1231,7 +1500,7 @@ rw_change_bit:
     mov     eax, [rel group_blockmap]
     test    r13d, r13d
     cmovnz  eax, [rel group_inodemap]
-    shl     rax, 3
+    imul    rax, [rbp + mount_volume.ext_sectors]
     mov     ecx, ebx
     shr     ecx, 12
     lea     r12, [rax + rcx]
@@ -1329,6 +1598,11 @@ rw_write_inode:
     rep     stosb
     mov     word [rbx], EXT_REG | 0o644
     mov     word [rbx + 26], 1
+    cmp     byte [rel create_type], 7
+    jne     .directory_mode
+    mov     word [rbx], EXT_SYMLINK | 0o777
+    jmp     .payload
+.directory_mode:
     cmp     byte [rel create_type], 2
     jne     .payload
     mov     word [rbx], EXT_DIR | 0o755
@@ -1337,7 +1611,7 @@ rw_write_inode:
 .replace:
     lea     rdi, [rbx + 40]
     xor     eax, eax
-    mov     ecx, EXT_DIRECT
+    mov     ecx, 15                    ; Clear stale indirect roots as well.
     rep     stosd
     mov     dword [rbx + 108], 0       ; High size of a regular file.
     mov     eax, [rel replace_time]
@@ -1350,14 +1624,39 @@ rw_write_inode:
     jb      .payload
     mov     dword [rbx + 136], 0
 .payload:
-    mov     eax, [rel create_size]
+    mov     rax, [rel create_size]
     mov     [rbx + 4], eax
-    mov     ecx, [rel create_block_count]
-    lea     eax, [rcx * EXT_SECTORS]
+    cmp     byte [rel create_type], 1
+    jne     .allocated
+    shr     rax, 32
+    mov     [rbx + 108], eax
+.allocated:
+    mov     eax, [rel create_owned_count]
+    cmp     byte [rel create_resize], 0
+    je      .attributes
+    mov     eax, [rel sparse_count]
+    add     eax, [rel sparse_metadata]
+.attributes:
+    cmp     dword [rbx + 104], 0
+    je      .block_count
+    inc     eax
+.block_count:
+    imul    eax, [rbp + mount_volume.ext_sectors]
     mov     [rbx + 28], eax
     lea     rdi, [rbx + 40]
-    lea     rsi, [rel create_blocks]
+    cmp     byte [rel create_type], 7
+    jne     .mapped
+    cmp     dword [rel create_block_count], 0
+    jne     .mapped
+    mov     rsi, [rel create_data]
+    mov     ecx, [rel create_size]
+    rep     movsb
+    jmp     .save
+.mapped:
+    lea     rsi, [rel create_roots]
+    mov     ecx, 15
     rep     movsd
+.save:
     call    rw_save_inode_sector
 .done:
     pop     rbx
@@ -1405,13 +1704,12 @@ rw_publish:
     ret
 
 section .rodata
-rw_features_error: db "Ext2 features require a read-only mount (-o ro).", 10, 0
 ext_readonly_error: db "Ext2 is read-only.", 10, 0
 ext_write_blocked: db "Ext2 writes are blocked.", 10, 0
 ext_dirty_detached: db "Ext2 unmounted dirty. Run offline e2fsck.", 10, 0
-ext_write_large: db "Ext2 write limit is 48 KiB.", 10, 0
+ext_write_large: db "File exceeds the supported ext2 size limit.", 10, 0
 ext_bad_name: db "Invalid ext2 file name.", 10, 0
-ext_slot_full: db "Ext2 directory has no writable slot and cannot grow past 12 direct blocks.", 10, 0
+ext_slot_full: db "Ext2 directory has no writable slot and cannot grow further.", 10, 0
 ext_duplicate: db "Duplicate ext2 directory entries.", 10, 0
 ext_exists: db "Ext2 entry already exists.", 10, 0
 ext_no_space: db "Ext2 has no free inode or data blocks.", 10, 0
@@ -1424,13 +1722,17 @@ ext_saved: db "Ext2 file saved.", 10, 0
 section .bss
 alignb 8
 create_data: resq 1
+create_reader: resq 1
+create_sparse: resb 1
+create_resize: resb 1
+create_has_pointers: resb 1
 create_name: resq 1
 create_slot_sector: resq 1
-create_size: resd 1
+create_size: resq 1
 create_name_length: resd 1
 create_rec_min: resd 1
 create_block_count: resd 1
-create_blocks: resd EXT_DIRECT + 1
+create_owned_count: resd 1
 create_total: resd 1
 growth_index: resd 1
 parent_inode: resd 1

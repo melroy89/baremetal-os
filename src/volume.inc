@@ -35,5 +35,16 @@ struc mount_volume
     .ext_features:        resd 1
     .ext_groups:          resd 1
     .ext_first_inode:     resd 1
+    .ext_compat:          resd 1
+    .ext_reserved_gdt:    resd 1
+    .ext_first_data:      resd 1
+    .ext_gdt_sector:      resd 1
+    .ext_block_shift:     resd 1
+    .ext_block_mask:      resd 1
+    .ext_ptrs:            resd 1
+    alignb 8
+    .ext_block_size:      resq 1
+    .ext_sectors:         resq 1
+    .ext_max_blocks:      resq 1
     alignb 8
 endstruc

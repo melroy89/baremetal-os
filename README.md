@@ -72,7 +72,7 @@ The console starts at `/`. Run `help` for commands or `ls` to see available volu
 | `touch PATH`                  | Create an empty file.                              |
 | `cp SOURCE DEST`              | Copy a file.                                       |
 | `mkdir PATH`                  | Create a directory on writable FAT32 or ext2.      |
-| `mv SOURCE DEST`              | Rename a regular file in the same disk directory.  |
+| `mv SOURCE DEST`              | Rename or move an entry within one volume.         |
 | `rm PATH`                     | Remove a file or an empty directory.               |
 | `mount [diskNpM /NAME]`       | List mounts or mount a FAT32 partition.            |
 | `mount -t ext2 diskNpM /NAME` | Mount a supported ext2 partition.                  |

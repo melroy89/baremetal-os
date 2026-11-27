@@ -25,37 +25,40 @@ For direct QEMU boot with `-machine pc`, add one of these drives. Use `format=qc
 | `mount -t ext2 [-o ro] diskNpM /NAME` | Mount a supported ext2 partition.                  |
 | `umount /NAME`                        | Flush and unmount a named volume.                  |
 
-Use `-o ro` to mount read-only. Writable mounts require a device that can flush writes. Use `mv SOURCE DEST` to rename a regular file within one directory when the destination is unused. The new ext2 name must fit in the original record and sector. FAT32 rename accepts short names in directories without live long-name records.
+Use `-o ro` for read-only mounts. Writable mounts require a device that can flush writes.
 
 ## Ext2
 
-The ext2 writer creates regular files up to 48 KiB with `touch`, `echo >`, and `cp`. Use `echo >` or `cp` to replace an existing file. Replacement updates the modification and change times from a valid UTC hardware clock, with one-second precision. Use `mkdir PATH` to create a directory and `rm PATH` to remove a file or an empty directory. Removing one of several hard links also uses the clock to update the surviving inode’s change time. Lookup is case-sensitive. Linear directories can grow up to 12 direct blocks. Replacement and final removal require direct data blocks.
-
-This command creates a 64 MiB ext2 filesystem image with 4 KiB blocks and the supported feature set.
+On Linux, create a 64 MiB ext2 image.
 
 ```sh
-mke2fs -t ext2 -b 4096 -O none,filetype,sparse_super,large_file volume.img 64M
+mke2fs -t ext2 volume.img 64M
 ```
 
-The guest example assumes GPT partition 2 contains an ext2 filesystem.
+If the ext2 volume is on GPT partition 2 of `disk0`, mount it in the guest.
 
 ```text
 mount -t ext2 disk0p2 /ext
 echo "Saved on ext2" > /ext/note.txt
-ls /ext
-crc32range 0 14 /ext/note.txt
+cat /ext/note.txt
 umount /ext
 ```
 
-Use `-o ro` for read-only access, including supported images with features outside the writer profile. Cleanly unmount, reboot, or halt before removing a writable image. After a power cut or write error, run `e2fsck` on the offline volume before mounting it writable again.
+**Compatibility.** Ext2 supports 1, 2, and 4 KiB blocks and 128- or 256-byte inodes. Writable features include `filetype`, `sparse_super`, `large_file`, `resize_inode`, `ext_attr`, and `dir_index`. Editing an indexed directory converts it to linear records. Existing extended attributes are preserved. Linux handles ACLs.
 
-Run `make test-ext2` for the read, write, and recovery checks. Run `make bench-ext2` on a KVM host to measure sequential reads.
+**Files and paths.** `cp` streams large files and preserves holes between ext2 volumes at the destination block size. Writes beyond 2 GiB − 1 require `large_file`. Names are case-sensitive. `mv` works within one volume. Leave a directory tree before moving it. File replacement, cross-directory moves, and link-count changes use the guest’s UTC hardware clock. See [console commands](console.md) for links, `stat`, and `truncate`.
+
+**Recovery.** Unmount, reboot, or halt before removing a writable volume. After a power cut or write error, run `e2fsck` offline before mounting it writable again. For an interrupted move, check both paths and `lost+found`.
+
+Run `make test-ext2` for core checks, `make test-ext2-extended` for more recovery cases, or `make bench-ext2` for sequential read timings on KVM.
 
 ## FAT32 example
 
 This example assumes GPT partition 1 contains a FAT32 volume.
 
 File commands work in existing FAT32 directories with ASCII 8.3 names. You can read and replace files through short aliases such as `LONGFI~1.TXT`. Use `mkdir PATH` to create one directory with an 8.3 name. Use `rm PATH` to remove a file or an empty directory. FAT32 entries with long-name records or the read-only attribute are protected from removal, as are the current directory and its ancestors.
+
+`mv` accepts short names in the same directory when the destination is unused and the directory has no live long-name entries.
 
 ```text
 mount disk0p1 /disk

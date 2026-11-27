@@ -1,4 +1,4 @@
-; Ext2 with 4 KiB blocks and legacy block pointers.
+; Ext2 with 1, 2 or 4 KiB blocks and legacy block pointers.
 bits 64
 default rel
 
@@ -6,21 +6,38 @@ default rel
 %include "volume.inc"
 
 %define EXT_BLOCK 4096
-%define EXT_SECTORS (EXT_BLOCK / BLOCK_SIZE)
-%define EXT_PTRS (EXT_BLOCK / 4)
 %define EXT_ROOT 2
+%define EXT_DIRECT 12
+; Linux ext2 computes its 4 KiB limit from the dense tree, including metadata.
+%define EXT_4K_SECTOR_LIMIT (0xFFFFFFFF >> 3)
+%define EXT_4K_TRIPLE_DATA (EXT_4K_SECTOR_LIMIT - EXT_DIRECT - 1024 - 1024 * 1024)
+%define EXT_4K_META (1027 + (EXT_4K_TRIPLE_DATA + 1023) / 1024 + (EXT_4K_TRIPLE_DATA + 1048575) / 1048576)
+%define EXT_4K_MAX_SIZE ((EXT_4K_SECTOR_LIMIT - EXT_4K_META) * EXT_BLOCK)
 %define EXT_INDEX_FL 0x1000
 %define EXT_DIR 0x4000
 %define EXT_REG 0x8000
+%define EXT_SYMLINK 0xA000
 %define EXT_FILETYPE 2
 %define EXT_LARGE_FILE 2
-%define EXT_MAX_BLOCKS (12 + EXT_PTRS + EXT_PTRS * EXT_PTRS + EXT_PTRS * EXT_PTRS * EXT_PTRS)
+%define EXT_COMPAT_XATTR 0x08
+%define EXT_COMPAT_RESIZE 0x10
+%define EXT_COMPAT_INDEX 0x20
+%define EXT_RESIZE_INODE 7
+
+; Convert a byte offset to a logical ext2 block, preserving rcx.
+%macro ext_block_index 1
+    push    rcx
+    mov     ecx, [rbp + mount_volume.ext_block_shift]
+    shr     %1, cl
+    pop     rcx
+%endmacro
 
 struc ext_inode
     .size: resq 1
     .mode: resd 1
     .flags: resd 1
     .links: resd 1
+    .data_sectors: resd 1
     .blocks: resd 15
     alignb 8
 endstruc
@@ -54,12 +71,39 @@ ext_mount:
     jne     .bad
     cmp     word [rbx + 58], 1          ; Clean, no error flag.
     jne     .bad
-    cmp     dword [rbx + 20], 0         ; First data block for 4 KiB.
+    mov     ecx, [rbx + 24]
+    cmp     ecx, 2
+    ja      .bad
+    cmp     ecx, [rbx + 28]            ; Fragment size equals block size.
     jne     .bad
-    cmp     dword [rbx + 24], 2
+    xor     eax, eax
+    test    ecx, ecx
+    setz    al
+    cmp     eax, [rbx + 20]
     jne     .bad
-    cmp     dword [rbx + 28], 2         ; Fragment size equals block size.
-    jne     .bad
+    mov     [rbp + mount_volume.ext_first_data], eax
+    mov     edx, 1024
+    shl     edx, cl
+    mov     [rbp + mount_volume.ext_block_size], rdx
+    add     ecx, 10
+    mov     [rbp + mount_volume.ext_block_shift], ecx
+    lea     ecx, [rdx - 1]
+    mov     [rbp + mount_volume.ext_block_mask], ecx
+    mov     ecx, edx
+    shr     ecx, 9
+    mov     [rbp + mount_volume.ext_sectors], rcx
+    inc     eax
+    imul    eax, ecx
+    mov     [rbp + mount_volume.ext_gdt_sector], eax
+    mov     eax, edx
+    shr     eax, 2
+    mov     [rbp + mount_volume.ext_ptrs], eax
+    mov     edx, eax
+    imul    edx, eax
+    lea     ecx, [rax + rdx + 12]
+    imul    edx, eax
+    add     edx, ecx
+    mov     [rbp + mount_volume.ext_max_blocks], rdx
     cmp     dword [rbx + 76], 1
     ja      .bad
     mov     dword [rbp + mount_volume.ext_first_inode], 11
@@ -75,13 +119,18 @@ ext_mount:
     jne     .bad
 .inode_size:
     mov     [rbp + mount_volume.ext_inode_size], ecx
-    test    dword [rbx + 92], ~0x38     ; xattr, resize_inode, dir_index
+    mov     eax, [rbx + 92]
+    test    eax, ~0x38                 ; xattr, resize_inode, dir_index
     jnz     .bad
-    cmp     byte [rbp + mount_volume.read_only], 0
-    jne     .read_features
-    cmp     dword [rbx + 92], 0
-    jne     .write_features
-.read_features:
+    mov     [rbp + mount_volume.ext_compat], eax
+    xor     edx, edx
+    test    eax, EXT_COMPAT_RESIZE
+    jz      .reserved_gdt
+    movzx   edx, word [rbx + 206]
+    cmp     edx, [rbp + mount_volume.ext_ptrs]
+    ja      .bad
+.reserved_gdt:
+    mov     [rbp + mount_volume.ext_reserved_gdt], edx
     mov     eax, [rbx + 96]
     test    eax, ~EXT_FILETYPE
     jnz     .bad
@@ -96,7 +145,7 @@ ext_mount:
     cmp     eax, 3
     jb      .bad
     mov     [rbp + mount_volume.ext_blocks], eax
-    shl     rax, 3
+    imul    rax, [rbp + mount_volume.ext_sectors]
     mov     rdx, [rbp + mount_volume.partition_last]
     sub     rdx, [rbp + mount_volume.volume_base]
     inc     rdx
@@ -105,23 +154,29 @@ ext_mount:
     mov     [rbp + mount_volume.total_sectors], rax
     mov     eax, [rbx + 32]
     lea     edx, [rax - 1]
-    cmp     edx, EXT_BLOCK * 8 - 1
-    ja      .bad
+    mov     r8d, [rbp + mount_volume.ext_block_size]
+    shl     r8d, 3
+    cmp     edx, r8d
+    jae     .bad
     cmp     eax, [rbx + 36]
     jne     .bad
     mov     [rbp + mount_volume.ext_blocks_group], eax
     mov     esi, [rbx + 40]
     lea     edx, [rsi - 1]
-    cmp     edx, EXT_BLOCK * 8 - 1
-    ja      .bad
+    mov     r8d, [rbp + mount_volume.ext_block_size]
+    shl     r8d, 3
+    cmp     edx, r8d
+    jae     .bad
     mov     [rbp + mount_volume.ext_inodes_group], esi
     imul    ecx, esi
-    test    ecx, EXT_BLOCK - 1
+    test    ecx, [rbp + mount_volume.ext_block_mask]
     jnz     .bad
-    shr     ecx, 12
-    mov     [rbp + mount_volume.ext_inode_blocks], ecx
+    mov     r8d, ecx
+    ext_block_index r8d
+    mov     [rbp + mount_volume.ext_inode_blocks], r8d
     mov     ecx, eax
     mov     eax, [rbp + mount_volume.ext_blocks]
+    sub     eax, [rbp + mount_volume.ext_first_data]
     dec     eax
     xor     edx, edx
     div     ecx
@@ -134,8 +189,10 @@ ext_mount:
     cmp     rcx, rsi
     ja      .bad
     mov     [rbp + mount_volume.ext_inodes], ecx
-    add     eax, 127
-    shr     eax, 7
+    shl     rax, 5
+    add     rax, [rbp + mount_volume.ext_block_size]
+    dec     rax
+    ext_block_index rax
     mov     [rbp + mount_volume.ext_gdt_blocks], eax
     cmp     eax, [rbp + mount_volume.ext_blocks_group]
     jae     .bad
@@ -159,9 +216,6 @@ ext_mount:
     ret
 .bad:
     lea     rax, [rel bad_super]
-    jmp     .done
-.write_features:
-    lea     rax, [rel rw_features_error]
     jmp     .done
 
 ; rdi = volume-relative sector, rsi = destination.
@@ -188,7 +242,7 @@ load_inode:
     mov     r13d, edx
     mov     edi, eax
     shr     edi, 4                     ; Sixteen group descriptors per sector.
-    add     edi, EXT_SECTORS
+    add     edi, [rbp + mount_volume.ext_gdt_sector]
     lea     rsi, [rel metadata]
     call    read_sector
     test    rax, rax
@@ -199,6 +253,7 @@ load_inode:
     lea     rsi, [rel metadata]
     add     rsi, rax
     imul    ebx, [rbp + mount_volume.ext_blocks_group]
+    add     ebx, [rbp + mount_volume.ext_first_data]
     mov     eax, [rsi + 8]             ; Inode table block.
     test    eax, eax
     jz      .bad
@@ -240,13 +295,15 @@ load_inode:
     cmp     r8, rdx
     jb      .bad
 .address:
-    test    ebx, ebx
-    jnz     .offset
-    cmp     eax, [rbp + mount_volume.ext_gdt_blocks]
+    cmp     ebx, [rbp + mount_volume.ext_first_data]
+    jne     .offset
+    mov     ecx, [rbp + mount_volume.ext_gdt_blocks]
+    add     ecx, ebx
+    cmp     eax, ecx
     jbe     .bad
 .offset:
     imul    r13d, [rbp + mount_volume.ext_inode_size]
-    shl     rax, 3
+    imul    rax, [rbp + mount_volume.ext_sectors]
     mov     edi, r13d
     shr     edi, 9
     add     rdi, rax
@@ -266,6 +323,13 @@ load_inode:
     mov     [r12 + ext_inode.mode], eax
     mov     ecx, [rsi + 32]
     mov     [r12 + ext_inode.flags], ecx
+    mov     edx, [rsi + 28]
+    cmp     dword [rsi + 104], 0
+    je      .data_sectors
+    sub     edx, [rbp + mount_volume.ext_sectors]
+    jc      .bad
+.data_sectors:
+    mov     [r12 + ext_inode.data_sectors], edx
     test    ecx, 0x10080C04            ; Inline data, extents, compression.
     jnz     .bad
     mov     edx, [rsi + 4]
@@ -279,7 +343,8 @@ load_inode:
     shl     rcx, 32
     or      rdx, rcx
 .size:
-    mov     rax, EXT_MAX_BLOCKS * EXT_BLOCK
+    mov     rax, [rbp + mount_volume.ext_max_blocks]
+    imul    rax, [rbp + mount_volume.ext_block_size]
     cmp     rdx, rax
     ja      .bad
     mov     [r12 + ext_inode.size], rdx
@@ -304,20 +369,22 @@ map_block:
     push    rbx
     push    r12
     push    r13
-    cmp     rdi, EXT_MAX_BLOCKS
+    cmp     rdi, [rbp + mount_volume.ext_max_blocks]
     jae     .bad
     cmp     edi, 12
     jb      .direct
     mov     ebx, edi
     sub     ebx, 12
     mov     r12d, 1
-    cmp     ebx, EXT_PTRS
+    mov     eax, [rbp + mount_volume.ext_ptrs]
+    cmp     ebx, eax
     jb      .indirect
-    sub     ebx, EXT_PTRS
+    sub     ebx, eax
     inc     r12d
-    cmp     ebx, EXT_PTRS * EXT_PTRS
+    imul    eax, eax
+    cmp     ebx, eax
     jb      .indirect
-    sub     ebx, EXT_PTRS * EXT_PTRS
+    sub     ebx, eax
     inc     r12d
 .indirect:
     mov     edx, [rsi + ext_inode.blocks + 11 * 4 + r12 * 4]
@@ -327,12 +394,16 @@ map_block:
     cmp     edx, [rbp + mount_volume.ext_blocks]
     jae     .bad
     dec     r12d
-    imul    ecx, r12d, 10
+    mov     ecx, [rbp + mount_volume.ext_block_shift]
+    sub     ecx, 2
+    imul    ecx, r12d
     mov     r13d, ebx
     shr     r13d, cl
-    and     r13d, EXT_PTRS - 1
+    mov     eax, [rbp + mount_volume.ext_ptrs]
+    dec     eax
+    and     r13d, eax
     mov     edi, edx
-    shl     rdi, 3
+    imul    rdi, [rbp + mount_volume.ext_sectors]
     mov     eax, r13d
     shr     eax, 7
     add     rdi, rax
@@ -375,18 +446,15 @@ directory_inode:
     jnz     .done
     cmp     dword [rel dir_inode + ext_inode.mode], EXT_DIR
     jne     not_directory
-    test    dword [rel dir_inode + ext_inode.flags], EXT_INDEX_FL
-    jnz     .indexed
     mov     rax, [rel dir_inode + ext_inode.size]
     test    rax, rax
     jz      corrupt
-    test    eax, EXT_BLOCK - 1
+    test    eax, [rbp + mount_volume.ext_block_mask]
     jnz     corrupt
+    test    dword [rel dir_inode + ext_inode.flags], EXT_INDEX_FL
+    jnz     verify_directory_index
     xor     eax, eax
 .done:
-    ret
-.indexed:
-    lea     rax, [rel indexed_directory]
     ret
 
 ext_root:
@@ -429,7 +497,7 @@ scan_dir:
     xor     r13d, r13d
 .block:
     mov     rax, [rel dir_inode + ext_inode.size]
-    shr     rax, 12
+    ext_block_index rax
     cmp     r13, rax
     jae     .end
     mov     rdi, r13
@@ -440,9 +508,9 @@ scan_dir:
     test    edx, edx
     jz      .bad
     mov     ebx, edx
-    shl     rbx, 3
+    imul    rbx, [rbp + mount_volume.ext_sectors]
     lea     r14, [rel dir_data]
-    mov     r15d, EXT_SECTORS
+    mov     r15d, [rbp + mount_volume.ext_sectors]
 .read:
     mov     rdi, rbx
     mov     rsi, r14
@@ -602,7 +670,7 @@ ext_read_at:
     test    r14d, r14d
     jz      .success
     mov     rbx, r13
-    shr     rbx, 12
+    ext_block_index rbx
     cmp     rbx, [rel cached_logical]
     je      .cached
     mov     rdi, rbx
@@ -626,10 +694,12 @@ ext_read_at:
     test    eax, eax
     jz      .hole
     mov     rdi, rax
-    shl     rdi, 3
+    imul    rdi, [rbp + mount_volume.ext_sectors]
     mov     eax, r13d
     shr     eax, 9
-    and     eax, EXT_SECTORS - 1
+    mov     ecx, [rbp + mount_volume.ext_sectors]
+    dec     ecx
+    and     eax, ecx
     add     rdi, rax
     lea     rsi, [rel file_sector]
     call    read_sector
@@ -646,8 +716,8 @@ ext_read_at:
     jmp     .advance
 .read_block:
     mov     esi, r13d
-    and     esi, EXT_BLOCK - 1
-    mov     ebx, EXT_BLOCK
+    and     esi, [rbp + mount_volume.ext_block_mask]
+    mov     ebx, [rbp + mount_volume.ext_block_size]
     sub     ebx, esi
     cmp     ebx, r14d
     cmova   ebx, r14d
@@ -656,23 +726,23 @@ ext_read_at:
     jz      .hole
     cmp     byte [rel file_block_valid], 0
     jne     .block_bytes
-    shl     rdi, 3
+    imul    rdi, [rbp + mount_volume.ext_sectors]
     mov     rax, [rbp + mount_volume.total_sectors]
     sub     rax, rdi
     jc      .bad
-    cmp     rax, EXT_SECTORS
+    cmp     rax, [rbp + mount_volume.ext_sectors]
     jb      .bad
     add     rdi, [rbp + mount_volume.volume_base]
     mov     dword [rel block_selected], 1
     lea     rsi, [rel file_block]
-    mov     ecx, EXT_SECTORS
+    mov     ecx, [rbp + mount_volume.ext_sectors]
     call    block_read_range
     test    rax, rax
     jnz     .done
     mov     byte [rel file_block_valid], 1
 .block_bytes:
     mov     esi, r13d
-    and     esi, EXT_BLOCK - 1
+    and     esi, [rbp + mount_volume.ext_block_mask]
     lea     rax, [rel file_block]
     add     rsi, rax
     jmp     .copy_bytes
@@ -709,7 +779,7 @@ corrupt:
 section .rodata
 bad_super: db "Unsupported or invalid ext2 volume.", 10, 0
 corrupt_text: db "Invalid ext2 metadata or block pointer.", 10, 0
-indexed_directory: db "Indexed ext2 directories are unsupported.", 10, 0
+indexed_directory: db "Invalid or unsupported ext2 directory index.", 10, 0
 not_dir: db "Expected an ext2 directory.", 10, 0
 not_regular: db "Expected a regular ext2 file.", 10, 0
 missing_entry: db "Ext2 entry not found.", 10, 0
@@ -729,9 +799,13 @@ file_sector: resb BLOCK_SIZE
 file_block: resb EXT_BLOCK
 
 %include "ext2_verify.inc"
+%include "ext2_features.inc"
+%include "ext2_tree.inc"
+%include "ext2_sparse.inc"
 %include "ext2_write.inc"
 %include "ext2_remove.inc"
 %include "ext2_move.inc"
+%include "ext2_namespace.inc"
 
 section .text
 ext_flush:

@@ -50,7 +50,11 @@ The console starts at `/`. Use `ls` there to see mounted volumes, or `cd /ram` t
 | `cp SOURCE DEST`                | Copy a file between or within mounted volumes.              |
 | `touch PATH`                    | Create an empty file. Existing files stay unchanged.        |
 | `mkdir PATH`                    | Create one directory on a writable FAT32 or ext2 volume.    |
-| `mv SOURCE DEST`                | Rename a regular file within the same disk directory.       |
+| `mv SOURCE DEST`                | Rename or move an entry within one volume.                  |
+| `ln [-s] SOURCE LINK`           | Create an ext2 hard or symbolic link.                       |
+| `readlink PATH`                 | Print an ext2 symbolic link target.                         |
+| `stat PATH`                     | Inspect ext2 inode metadata.                                |
+| `truncate PATH SIZE`            | Set the length of an ext2 regular file in bytes.            |
 | `rm PATH`                       | Remove a file or an empty directory.                        |
 | `crc32 FILE`                    | Checksum a file in `/ram` from anywhere.                    |
 | `crc32range OFFSET LENGTH PATH` | Checksum up to 64 MiB of a file using decimal byte offsets. |

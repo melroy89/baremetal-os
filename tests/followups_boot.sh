@@ -58,12 +58,13 @@ check_disks() {
     console_check 'mv /fat/OLD.TXT /fat/NEW.TXT' 'mv /fat/OLD.TXT /fat/NEW.TXT'
     console_check 'cat /fat/NEW.TXT' $'\nVirtio\r?\n'
     console_check 'cat /ata/OLD.TXT' $'\nATA\r?\n'
-    console_check 'mv /ata/OLD.TXT /fat/NEW.TXT' 'same FAT32 or ext2 directory'
+    console_check 'mv /ata/OLD.TXT /fat/NEW.TXT' 'requires one mounted volume'
     console_check 'mv "/ext/Old Name" "/ext/New Name"' 'mv '
-    console_check 'mv "/ext/New Name" /ext/Bulk' 'already exists'
+    console_check 'mv /ext/Missing /ext/Bulk' 'Ext2 entry not found'
     console_check 'cat /ext/New Name' $'\nExt2 original\r?\n'
     console_check 'crc32range 509 8193 /ext/Bulk' "$crc"
     console_check 'echo Writable > /ext/Write' 'Ext2 file saved'
+    console_check 'cp /ata/STREAM.TXT /ext/Stream' 'Ext2 file saved'
     console_check 'reboot' 'Rebooting'
     console_check 'mount disk1p1 /fat' 'FAT32 mounted'
     console_check 'mount -t ext2 -o ro disk1p2 /ext' 'Ext2 mounted read-only'
@@ -115,6 +116,8 @@ run_guest 'serial and PS/2 command history' 1 64M check_input -machine pc -kerne
 
 truncate -s 40M "$files/fat"
 mkfs.fat -F 32 "$files/fat" >/dev/null
+head -c 49153 /dev/zero | tr '\000' X > "$files/stream"
+mcopy -i "$files/fat" "$files/stream" ::STREAM.TXT
 truncate -s 16M "$files/ext"
 mke2fs -q -F -t ext2 -b 4096 -I 256 -O none,filetype,sparse_super,large_file "$files/ext"
 printf 'Ext2 original\n' > "$files/original"
@@ -141,6 +144,7 @@ dd if="$files/virtio" of="$files/ext" bs=1M skip=42 count=16 status=none
 fsck.fat -n "$files/fat"
 e2fsck -fn "$files/ext"
 debugfs -R 'cat "/New Name"' "$files/ext" 2>/dev/null | cmp - "$files/original"
+debugfs -R 'cat /Stream' "$files/ext" 2>/dev/null | cmp - "$files/stream"
 before=$(sha256sum "$files/virtio")
 run_guest 'virtio-blk read-only disk and default disk selection' 1 64M check_read_only -machine pc -kernel "$kernel" \
     -drive "file=$files/virtio,if=none,id=vd,format=raw,readonly=on" \

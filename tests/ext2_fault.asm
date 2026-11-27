@@ -2,10 +2,15 @@
 bits 64
 default rel
 extern __real_block_read, __real_block_write, __real_block_flush, console_write_cstr
-global __wrap_block_read, __wrap_block_write, __wrap_block_flush
+extern __real_block_read_range, block_selected
+global __wrap_block_read, __wrap_block_read_range, __wrap_block_write, __wrap_block_flush
 
 section .text
 __wrap_block_read:
+%ifdef STREAM_READ
+    call    check_stream_read
+    jc      fault
+%endif
 %ifdef READ
     cmp     dword [rel flushes], 2    ; Read the publication sector after mutation.
     jne     .read
@@ -17,7 +22,47 @@ __wrap_block_read:
 %endif
     jmp     __real_block_read
 
+__wrap_block_read_range:
+%ifdef STREAM_READ
+    call    check_stream_read
+    jc      fault
+%endif
+    jmp     __real_block_read_range
+
+%ifdef STREAM_READ
+check_stream_read:
+    cmp     byte [rel stream_active], 1
+    jne     .continue
+    mov     eax, [rel block_selected]
+    cmp     eax, [rel stream_destination]
+    je      .continue
+    mov     byte [rel stream_active], 2
+    stc
+    ret
+.continue:
+    clc
+    ret
+%endif
+
 __wrap_block_write:
+%ifdef STREAM_WRITE
+    cmp     dword [rel flushes], 1
+    jne     .continue
+    inc     dword [rel writes]
+    cmp     dword [rel writes], 2
+    je      fault
+.continue:
+%endif
+%ifdef STREAM_READ
+    cmp     dword [rel flushes], 1
+    jne     .write
+    cmp     byte [rel stream_active], 0
+    jne     .write
+    mov     eax, [rel block_selected]
+    mov     [rel stream_destination], eax
+    mov     byte [rel stream_active], 1
+.write:
+%endif
 %ifdef ALLOC
     inc     dword [rel writes]
     cmp     dword [rel writes], 11     ; Descriptor update after inode allocation.
@@ -30,6 +75,10 @@ __wrap_block_write:
 
 __wrap_block_flush:
     inc     dword [rel flushes]
+%ifdef STREAM_FLUSH
+    cmp     dword [rel flushes], 2
+    je      fault
+%endif
 %ifdef FINAL
     cmp     dword [rel flushes], 5    ; Clean-state flush.
     je      fault
@@ -67,4 +116,8 @@ writes: resd 1
 flushes: resd 1
 %ifdef READ
 failed_read: resb 1
+%endif
+%ifdef STREAM_READ
+stream_destination: resd 1
+stream_active: resb 1
 %endif
