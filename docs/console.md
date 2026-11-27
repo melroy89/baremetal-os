@@ -25,15 +25,15 @@ At the VGA prompt, use **Page Up** and **Page Down** to browse up to 256 previou
 
 ## IDE storage
 
-Use `disk info` to inspect the disk and `disk gpt` to list its partitions. Use `mount disk0pN /disk`, where `N` is the GPT partition number of the FAT32 volume you want to mount.
+Use `disk info` to inspect the disk and `disk gpt` to list its partitions. Use `mount disk0pN /disk` for FAT32 or `mount -t ext2 disk0pN /ext` for ext2. Replace `N` with the GPT partition number.
 
-For more info read: [IDE storage and file commands](storage.md).
+See the [storage guide](storage.md) for mount options and disk commands.
 
 ## Ethernet
 
-DHCP starts automatically when virtio-net or e1000 initializes. Use `net info` to check the address and `ping HOST` to check connectivity. Use `net static` for manual addressing or `net off` for raw Ethernet.
+DHCP starts automatically when `virtio-net` or `e1000` initializes. Use `net info` to check the address and `ping HOST` to check connectivity. Use `net static` for manual addressing or `net off` for raw Ethernet.
 
-For more info read: [IPv4 setup and Ethernet commands](networking.md).
+See the [networking guide](networking.md) for setup and examples.
 
 ## Files and directories
 

@@ -1,6 +1,6 @@
 # Ethernet and IPv4
 
-Attach a modern virtio-net or QEMU `e1000` adapter. The kernel prefers a usable virtio-net device and starts DHCP in the background once the selected adapter initializes. Use `net info` to check which driver is active and whether an address has been assigned.
+Attach a modern `virtio-net` or QEMU `e1000` adapter. The kernel prefers a usable `virtio-net` device and starts DHCP in the background once the selected adapter initializes. Use `net info` to check which driver is active and whether an address has been assigned.
 
 | Command                               | Action                                                          |
 | ------------------------------------- | --------------------------------------------------------------- |
@@ -16,7 +16,7 @@ Attach a modern virtio-net or QEMU `e1000` adapter. The kernel prefers a usable 
 
 ## Try IPv4 in QEMU
 
-For direct boot with QEMU's user network, replace `-nic none` with `-netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on`. To use e1000, use `-nic user,model=e1000`. Then try:
+For direct boot with QEMU's user network, replace `-nic none` with `-netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-legacy=on`. For `e1000`, use `-nic user,model=e1000`. Wait for `net info` to show an IPv4 address before running the ping.
 
 ```text
 net info

@@ -10,7 +10,7 @@ Bare Metal OS is a small operating system written in x86-64 assembly and designe
 - GPT partition inspection and volume mounting, with writable ext2, FAT32, and a built-in RAM filesystem.
 - Browse multiple mounted volumes with `cd` and `ls`, read files with `cat`, and copy them between volumes with `cp`.
 - Multicore startup and tools to inspect CPUs, memory, and PCI devices.
-- IPv4 networking with virtio-net and Intel e1000 adapters, including ARP, UDP, `ping`, DHCP, and DNS lookups.
+- IPv4 networking with `virtio-net` and Intel `e1000` adapters, including ARP, UDP, `ping`, DHCP, and DNS lookups.
 
 ## Download
 
@@ -52,31 +52,32 @@ qemu-system-x86_64 -m 64M -nic none -cdrom baremetal-os.iso \
   -display none -serial stdio -monitor none
 ```
 
-For UEFI, install `ovmf`, replace `-m 64M` with `-m 128M`, and add `-bios /usr/share/ovmf/OVMF.fd`. The firmware path may vary by distribution.
+For UEFI, install `ovmf` (`ovmf-generic` on Ubuntu 26.04). Replace `-m 64M` with `-m 128M` and add `-bios /usr/share/ovmf/OVMF.fd`. The firmware path may vary by distribution.
 
 ## Console quick reference
 
 The console starts at `/`. Run `help` for commands or `ls` to see available volumes.
 
-| Command                    | Action                                             |
-| -------------------------- | -------------------------------------------------- |
-| `help`                     | List console commands.                             |
-| `info`, `cpu`, `mem`       | Inspect the guest, CPU, and memory.                |
-| `lspci`                    | List PCI devices.                                  |
-| `disk info`                | Inspect the attached IDE disk.                     |
-| `net info`                 | Show the Ethernet adapter and IPv4 configuration.  |
-| `ls [PATH]`                | List files in RAM or on a mounted volume.          |
-| `cd PATH`, `pwd`           | Change or show the current directory.              |
-| `cat PATH`                 | Print a file.                                      |
-| `echo [TEXT] > PATH`       | Write text to a file.                              |
-| `touch PATH`               | Create an empty file.                              |
-| `cp SOURCE DEST`           | Copy a file.                                       |
-| `mkdir PATH`               | Create a directory on writable FAT32 or ext2.      |
-| `rm PATH`                  | Remove a file or an empty directory.               |
-| `mount [disk0pN /NAME]`    | List volumes or mount an IDE partition.            |
-| `umount /NAME`             | Unmount a named volume.                            |
-| `uptime`, `log`, `version` | Check runtime, boot milestones, and build details. |
-| `reboot`, `halt`           | Restart or power off the guest.                    |
+| Command                       | Action                                             |
+| ----------------------------- | -------------------------------------------------- |
+| `help`                        | List console commands.                             |
+| `info`, `cpu`, `mem`          | Inspect the guest, CPU, and memory.                |
+| `lspci`                       | List PCI devices.                                  |
+| `disk info`                   | Inspect the attached IDE disk.                     |
+| `net info`                    | Show the Ethernet adapter and IPv4 configuration.  |
+| `ls [PATH]`                   | List a directory or show mounts at `/`.            |
+| `cd PATH`, `pwd`              | Change or show the current directory.              |
+| `cat PATH`                    | Print a file.                                      |
+| `echo [TEXT] > PATH`          | Write text to a file.                              |
+| `touch PATH`                  | Create an empty file.                              |
+| `cp SOURCE DEST`              | Copy a file.                                       |
+| `mkdir PATH`                  | Create a directory on writable FAT32 or ext2.      |
+| `rm PATH`                     | Remove a file or an empty directory.               |
+| `mount [disk0pN /NAME]`       | List mounts or mount a FAT32 partition.            |
+| `mount -t ext2 disk0pN /NAME` | Mount a supported ext2 partition.                  |
+| `umount /NAME`                | Unmount a named volume.                            |
+| `uptime`, `log`, `version`    | Check runtime, boot milestones, and build details. |
+| `reboot`, `halt`              | Restart or power off the guest.                    |
 
 ## Documentation
 

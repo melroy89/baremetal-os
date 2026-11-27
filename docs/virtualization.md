@@ -27,7 +27,7 @@ virsh -c qemu:///system vol-upload --pool default baremetal-os-kernel.elf bareme
 ## Boot the ISO in Proxmox VE
 
 1. Upload `baremetal-os.iso` to storage that accepts **ISO Images**.
-2. Create a VM with one vCPU and 512 MiB of RAM. Set its CD/DVD drive to boot the ISO first.
+2. Create a VM with one vCPU and [set the RAM for your firmware](../README.md#boot-the-iso). Set its CD/DVD drive to boot the ISO first.
 3. Select **SeaBIOS** for the graphical console.
 
 For **OVMF**, disable Secure Boot and leave **Pre-Enroll keys** unchecked if you add an EFI disk. Add a socket-backed serial port and connect with `qm terminal VMID`. [Proxmox VM configuration](https://pve.proxmox.com/pve-docs/chapter-qm.html)

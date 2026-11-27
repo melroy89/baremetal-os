@@ -4,33 +4,35 @@ For direct QEMU boot, add `-machine pc -drive file=disk.raw,format=raw,if=ide,in
 
 ## Disk commands
 
-| Command                             | Action                                             |
-| ----------------------------------- | -------------------------------------------------- |
-| `disk info`                         | Show the ATA model and disk capacity.              |
-| `disk crc32 LBA`                    | Checksum one sector by its zero-based decimal LBA. |
-| `disk gpt`                          | List partitions and identify the GPT copy in use.  |
-| `disk check [PATH]`                 | Count orphaned clusters without writing.           |
-| `disk repair [PATH]`                | Reclaim clusters proven to be unreferenced.        |
-| `mount [disk0pN /NAME]`             | List mounts or mount GPT partition `N` at `/NAME`. |
-| `mount -t ext2 disk0pN /NAME`       | Mount a supported clean ext2 partition read-write. |
-| `mount -t ext2 -o ro disk0pN /NAME` | Mount a supported ext2 partition read-only.        |
-| `umount /NAME`                      | Flush and unmount a named volume.                  |
+| Command                             | Action                                               |
+| ----------------------------------- | ---------------------------------------------------- |
+| `disk info`                         | Show the ATA model and disk capacity.                |
+| `disk crc32 LBA`                    | Checksum one sector by its zero-based decimal LBA.   |
+| `disk gpt`                          | List partitions and identify the GPT copy in use.    |
+| `disk check [PATH]`                 | Count orphaned FAT32 clusters without writing.       |
+| `disk repair [PATH]`                | Reclaim unreferenced FAT32 clusters.                 |
+| `mount [disk0pN /NAME]`             | List mounts or mount FAT32 partition `N` at `/NAME`. |
+| `mount -t ext2 disk0pN /NAME`       | Mount a supported clean ext2 partition read-write.   |
+| `mount -t ext2 -o ro disk0pN /NAME` | Mount a supported ext2 partition read-only.          |
+| `umount /NAME`                      | Flush and unmount a named volume.                    |
 
 ## Ext2
 
 The ext2 writer creates regular files up to 48 KiB with `touch`, `echo >`, and `cp`. Use `echo >` or `cp` to replace an existing file. Replacement updates the modification and change times from a valid UTC hardware clock, with one-second precision. Use `mkdir PATH` to create a directory and `rm PATH` to remove a file or an empty directory. Removing one of several hard links also uses the clock to update the surviving inode’s change time. Lookup is case-sensitive. Linear directories can grow up to 12 direct blocks. Replacement and final removal require direct data blocks.
 
-To format a new ext2 image for the writer, select 4 KiB blocks and the supported feature set.
+This command creates a 64 MiB ext2 filesystem image with 4 KiB blocks and the supported feature set.
 
 ```sh
-mke2fs -t ext2 -b 4096 -O none,filetype,sparse_super,large_file volume.img
+mke2fs -t ext2 -b 4096 -O none,filetype,sparse_super,large_file volume.img 64M
 ```
+
+The guest example assumes GPT partition 2 contains an ext2 filesystem.
 
 ```text
 mount -t ext2 disk0p2 /ext
 echo "Saved on ext2" > /ext/note.txt
 ls /ext
-crc32range 0 13 /ext/note.txt
+crc32range 0 14 /ext/note.txt
 umount /ext
 ```
 
