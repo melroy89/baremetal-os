@@ -12,7 +12,7 @@ The VGA and serial editors support these shortcuts. Use an ANSI serial terminal 
 | **Ctrl+W**, **Ctrl+U**, **Ctrl+K**     | Erase the preceding word, to the start, or to the end, respectively.                 |
 | **Ctrl+L**                             | Clear the visible screen and redraw the draft. Keeps scrollback.                     |
 | **Ctrl+D**                             | Delete forward in a draft. At an empty prompt, halt cleanly.                         |
-| **Ctrl+C**                             | Discard the draft or interrupt `cat`, `echo`, `cp`, or `mv`.                       |
+| **Ctrl+C**                             | Discard the draft or interrupt `cat`, `echo`, `cp`, or `mv`.                         |
 | **Tab**                                | Complete a command, path, or mount partition using the text before the cursor.       |
 | **Page Up**, **Page Down**             | Browse up to 256 rows of VGA scrollback.                                             |
 
@@ -34,7 +34,7 @@ Long lines scroll horizontally and can be up to 1,023 bytes. In a serial session
 | `log`                  | Show boot milestones.                                                   |
 | `history`              | Show up to 16 recent commands, oldest first, including this invocation. |
 | `version`              | Show the kernel version and build ID.                                   |
-| `clear`                | Clear the console and VGA scrollback.                                    |
+| `clear`                | Clear the console and VGA scrollback.                                   |
 | `reboot`               | Restart the guest.                                                      |
 | `halt`, `quit`, `exit` | Power off the guest.                                                    |
 
