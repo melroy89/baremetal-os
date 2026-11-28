@@ -62,7 +62,6 @@ monitor_key() {
 }
 
 check_editor() {
-    expect_serial 'baremetal> '
     printf 'echo discarded\033[D\003' >&"$serial_write"
     expect_serial '\^C'
     expect_serial 'baremetal> '
@@ -158,15 +157,20 @@ check_disk_mounts_and_renames() {
     console_check 'cat /ext/Write' $'\nWritable\r?\n'
 }
 
-check_inventory() {
-    expect_serial 'baremetal> '
+check_inventory_listing() {
+    local ata_status=$1 probe_label=$2
     printf 'disk list\r' >&"$serial_write"
-    expect_serial $'disk0  ATA\r?\n    No valid supported GPT\\.\r?\n'
+    expect_serial $'disk0  ATA\r?\n    '"$ata_status"$'\r?\n'
     expect_serial $'disk1  Virtio\r?\n    disk1p1  ambiguous\r?\n    disk1p3  Ext2\r?\n    disk1p5  '"$probe_label"$'\r?\n'
     expect_serial 'baremetal> '
     console_check 'disk gpt disk1' 'GPT: backup'
+    console_check 'mount -o ro disk1p5 /probe' "Filesystem detection: $probe_label"
+}
+
+check_inventory() {
+    expect_serial 'baremetal> '
+    check_inventory_listing 'No valid supported GPT\.' unknown
     console_check 'mount -o ro disk1p1 /ambiguous' 'Filesystem detection: ambiguous'
-    console_check 'mount -o ro disk1p5 /unknown' "Filesystem detection: $probe_label"
     console_check 'mount -o ro disk1p3 /ext' 'Ext2 mounted read-only'
     console_check 'mount -o ro -t fat32 disk1p1 /fat' 'FAT32 mounted read-only'
     console_check 'disk list disk1' 'Usage: disk info'
@@ -174,6 +178,7 @@ check_inventory() {
 
 check_completion() {
     expect_serial 'baremetal> '
+    check_inventory_listing 'GPT contains no partitions\.' unreadable
     local start=${#transcript}
     console_check 'help' 'Show console commands'
     [[ ${transcript:start} != *'Ctrl+'* ]]
@@ -309,11 +314,6 @@ check_completion() {
     expect_serial 'baremetal> '
 }
 
-check_empty_inventory() {
-    expect_serial 'baremetal> '
-    console_check 'disk list' $'disk0  ATA\r?\n    GPT contains no partitions\\.'
-}
-
 interrupt_copy() {
     local command=$1 result=$2
     printf '%s\r' "$command" >&"$serial_write"
@@ -427,10 +427,12 @@ files=$(mktemp -d)
 trap 'find "$files" -depth -delete' EXIT
 build_dir="${1:-build}"
 kernel="$build_dir/baremetal-os.elf"
-run_guest 'serial and PS/2 command history' 1 64M check_history -machine pc -kernel "$kernel" \
-    -monitor "unix:$files/monitor,server=on,wait=off"
+check_console_editor() {
+    check_history
+    check_editor
+}
 
-QEMU_TEST_HALT_INPUT=$'\004' run_guest 'serial and PS/2 line editing' 1 64M check_editor \
+QEMU_TEST_HALT_INPUT=$'\004' run_guest 'serial and PS/2 history and editing' 1 64M check_console_editor \
     -machine pc -kernel "$kernel" -monitor "unix:$files/monitor,server=on,wait=off"
 
 truncate -s 40M "$files/fat"
@@ -461,15 +463,12 @@ printf '\0' | dd of="$files/inventory" bs=1 seek=512 conv=notrunc status=none
 truncate -s 4M "$files/empty"
 cp --sparse=always "$files/empty" "$files/invalid"
 sgdisk -o "$files/empty" >/dev/null
-before=$(sha256sum "$files/invalid" "$files/inventory" "$files/empty")
-probe_label=unknown run_guest 'read-only disk inventory with GPT fallback and gaps' 1 64M check_inventory \
+before=$(sha256sum "$files/invalid" "$files/inventory")
+run_guest 'read-only disk inventory with GPT fallback and gaps' 1 64M check_inventory \
     -machine pc -kernel "$kernel" -drive "file=$files/invalid,if=ide,format=raw" \
     -drive "file=$files/inventory,if=none,id=vd,format=raw,cache=directsync" \
     -device virtio-blk-pci,drive=vd,disable-legacy=on
-probe_label=unreadable run_guest 'read-only disk inventory with a failed probe read' 1 64M check_inventory \
-    -machine pc -kernel "$build_dir/console-cancel.elf" -drive "file=$files/invalid,if=ide,format=raw" \
-    -drive "file=$files/inventory,if=none,id=vd,format=raw,cache=directsync" \
-    -device virtio-blk-pci,drive=vd,disable-legacy=on
+[[ $before == "$(sha256sum "$files/invalid" "$files/inventory")" ]]
 # Use a separate writable image so read-only completion can be checked by hash.
 cp --sparse=always "$files/inventory" "$files/completion-disk"
 cp --sparse=always "$files/ext" "$files/completion-ext"
@@ -492,17 +491,14 @@ escaped_name='Spaced "quote" \ name'
 printf 'escaped name\n' > "$files/completion-ram/$escaped_name"
 tar --format=ustar -cf "$files/completion.tar" -C "$files/completion-ram" complete{00..34} "$escaped_name"
 original_crc=$(crc_hex < "$files/original")
-completion_before=$(sha256sum "$files/completion-disk")
-run_guest 'serial and PS/2 command, path and partition completion' 1 64M check_completion \
+completion_before=$(sha256sum "$files/empty" "$files/completion-disk")
+run_guest 'Tab completion, empty GPT and unreadable probe' 1 64M check_completion \
     -machine pc -kernel "$build_dir/console-cancel.elf" -initrd "$files/completion.tar" \
     -monitor "unix:$files/monitor,server=on,wait=off" \
+    -drive "file=$files/empty,if=ide,format=raw,cache=directsync" \
     -drive "file=$files/completion-disk,if=none,id=vd,format=raw,cache=directsync" \
     -device virtio-blk-pci,drive=vd,disable-legacy=on
-[[ $completion_before == "$(sha256sum "$files/completion-disk")" ]]
-
-run_guest 'empty GPT inventory' 1 64M check_empty_inventory \
-    -machine pc -kernel "$kernel" -drive "file=$files/empty,if=ide,format=raw"
-[[ $before == "$(sha256sum "$files/invalid" "$files/inventory" "$files/empty")" ]]
+[[ $completion_before == "$(sha256sum "$files/empty" "$files/completion-disk")" ]]
 
 cp --sparse=always "$files/ata" "$files/cancel-ata"
 cp --sparse=always "$files/virtio" "$files/cancel-virtio"
