@@ -21,6 +21,9 @@ console_readline:
     call    edit_prompt
 
 .poll:
+    call    acpi_power_poll
+    test    eax, eax
+    jnz     .host_power
     call    ip_service
     mov     r15d, eax
     call    console_next_key
@@ -54,6 +57,13 @@ console_readline:
     cli
     mov     r14d, 3
     jmp     .poll
+
+.host_power:
+    call    vga_resume
+    mov     edi, 10
+    call    console_putc
+    mov     rax, -1
+    jmp     .return
 
 .got_char:
     cmp     eax, KEY_PAGE_UP

@@ -18,6 +18,15 @@ virt-install --connect qemu:///system --name baremetal-os --import \
 
 Open the guest in Virtual Machine Manager or connect with `virsh -c qemu:///system console baremetal-os`. Press Enter for the prompt and `Ctrl+]` to detach. To start and connect in one step, use `virsh -c qemu:///system start baremetal-os --console`.
 
+On QEMU i440fx or Q35 with SeaBIOS, use the ACPI power button for a clean shutdown or restart. The guest finishes the current command and flushes its disks before powering off. Libvirt restarts the guest after a reboot request.
+
+```sh
+virsh -c qemu:///system shutdown baremetal-os --mode acpi
+virsh -c qemu:///system reboot baremetal-os --mode acpi
+```
+
+In raw QEMU, send `system_powerdown` through QMP or the monitor. To restart through QMP, launch with `-no-shutdown`, wait for the guest-initiated `SHUTDOWN` event, then send `system_reset` and `cont`. Force-off and immediate reset bypass disk cleanup. On OVMF, use the guest's `halt` and `reboot` commands.
+
 To update the kernel, power off the guest and upload the new ELF.
 
 ```sh

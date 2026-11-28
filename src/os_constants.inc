@@ -58,6 +58,8 @@
 %define PIC_MASTER_VECTOR   0x20
 %define PIC_SLAVE_VECTOR    0x28
 %define PIC_EOI             0x20
+%define PIC_SPECIFIC_EOI    0x60
+%define PIC_READ_ISR        0x0B
 
 %define PIIX_RESET_PORT     0xCF9
 

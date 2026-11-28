@@ -17,7 +17,7 @@ extern vga_clear
 extern console_putc
 extern console_clear
 extern console_write_cstr
-extern console_input_init
+extern console_input_init, acpi_power_init, acpi_power_take
 extern console_readline, console_cancel_end
 extern timer_init
 extern timer_ns
@@ -72,6 +72,7 @@ kernel_main:
     lea     rdi, [rel event_smp]
     call    record_boot_event
     call    console_input_init
+    call    acpi_power_init
     lea     rdi, [rel event_console]
     call    record_boot_event
 
@@ -82,13 +83,22 @@ kernel_main:
     call    console_write_cstr
 
 .prompt:
+    call    acpi_power_take
+    test    eax, eax
+    jnz     .halt
     lea     rdi, [rel line_buffer]
     mov     esi, LINE_BUF_SIZE
     call    console_readline
+    push    rax
+    call    acpi_power_take
+    test    eax, eax
+    pop     rax
+    jnz     .halt
     cmp     rax, LINE_TOO_LONG
     je      .too_long
     test    rax, rax
     jns     .line_ready
+.halt:
     call    command_halt
     jmp     .prompt
 .line_ready:

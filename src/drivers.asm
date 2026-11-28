@@ -45,7 +45,7 @@ global console_input_irq
 global net_timer, net_timer_irq
 extern ip_service, ip_checkpoint, net_rx_boundary
 extern net_irq_rearm, net_irq_line
-extern prompt, shell_complete
+extern prompt, shell_complete, acpi_power_poll
 global console_readline
 global ps2_try_getc
 global pit_delay_us

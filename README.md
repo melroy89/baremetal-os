@@ -114,7 +114,7 @@ The image is `build/baremetal-os.iso`. If you added a GRUB platform after buildi
 
 ### Run the tests
 
-Run `make test` for the same suite as GitHub Actions, or use a focused target such as `make test-fat32` or `make test-boot`. The full suite needs the build and ISO tools above, plus QEMU, OVMF, `qemu-img`, `sgdisk`, `dosfstools`, `e2fsprogs`, and `socat`.
+Run `make test` for the same suite as GitHub Actions, or use a focused target such as `make test-fat32` or `make test-boot`. The full suite needs the build and ISO tools above, plus QEMU, OVMF, `qemu-img`, `sgdisk`, `dosfstools`, `e2fsprogs`, `socat`, and Python 3.
 
 ### Kernel overview
 

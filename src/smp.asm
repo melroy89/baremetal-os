@@ -32,7 +32,7 @@ extern write_u64
 extern apic_wait_icr
 extern apic_send_ipi
 extern crc32_buffer, crc32_foreground
-extern ip_checkpoint_at
+extern ip_checkpoint_at, acpi_find_table
 
 section .text
 
@@ -573,87 +573,12 @@ acpi_discover_madt:
     mov     dword [rel n_ap_ids], 0
     mov     dword [rel g_smp_total_cpus], 1
 
-    ; 1. Scan EBDA (BDA 0x40E << 4, 1 KiB)
-    movzx   rdi, word [abs 0x40E]
-    shl     rdi, 4
-    cmp     rdi, 0x80000
-    jb      .scan_bios
-    cmp     rdi, 0xA0000
-    jae     .scan_bios
-    mov     rsi, 1024
-    call    find_rsdp_in_range
-    test    rax, rax
-    jnz     .have_rsdp
-
-.scan_bios:
-    ; 2. Scan BIOS ROM area 0xE0000 .. 0xFFFFF (128 KiB)
-    mov     rdi, 0x000E0000
-    mov     rsi, 0x00020000
-    call    find_rsdp_in_range
+    mov     edi, 'APIC'
+    call    acpi_find_table
     test    rax, rax
     jz      .not_found
-
-.have_rsdp:
-    mov     rbx, rax                    ; rbx = RSDP ptr
-    ; Check ACPI revision >= 2 and valid 32-bit-accessible XSDT
-    cmp     byte [rbx + 15], 2
-    jb      .use_rsdt
-    mov     r12, [rbx + 24]             ; XSDT phys addr
-    test    r12, r12
-    jz      .use_rsdt
-    mov     rax, 0xF0000000
-    cmp     r12, rax
-    jae     .use_rsdt
-
-    ; Scan XSDT (8-byte entries starting at +36)
-    mov     ebp, [r12 + 4]              ; XSDT length
-    cmp     ebp, 36
-    jb      .use_rsdt
-    sub     ebp, 36
-    shr     ebp, 3                      ; entry count
-    xor     ecx, ecx
-.xsdt_lp:
-    cmp     ecx, ebp
-    jae     .use_rsdt
-    mov     rax, [r12 + 36 + rcx*8]
-    test    rax, rax
-    jz      .xsdt_next
-    mov     rdx, 0xF0000000
-    cmp     rax, rdx
-    jae     .xsdt_next
-    cmp     dword [rax], 0x43495041     ; "APIC"
-    je      .parse_madt
-.xsdt_next:
-    inc     ecx
-    jmp     .xsdt_lp
-
-.use_rsdt:
-    mov     r12d, [rbx + 16]            ; RSDT phys addr (32-bit)
-    test    r12, r12
-    jz      .not_found
-    mov     rax, 0xF0000000
-    cmp     r12, rax
-    jae     .not_found
-
-    mov     ebp, [r12 + 4]              ; RSDT length
-    cmp     ebp, 36
+    cmp     dword [rax + 4], 44
     jb      .not_found
-    sub     ebp, 36
-    shr     ebp, 2                      ; entry count
-    xor     ecx, ecx
-.rsdt_lp:
-    cmp     ecx, ebp
-    jae     .not_found
-    mov     eax, [r12 + 36 + rcx*4]
-    test    eax, eax
-    jz      .rsdt_next
-    cmp     eax, 0xF0000000
-    jae     .rsdt_next
-    cmp     dword [rax], 0x43495041     ; "APIC"
-    je      .parse_madt
-.rsdt_next:
-    inc     ecx
-    jmp     .rsdt_lp
 
 .parse_madt:
     ; rax = MADT ("APIC") table pointer
@@ -731,34 +656,6 @@ acpi_discover_madt:
     pop     r12
     pop     rbp
     pop     rbx
-    ret
-
-; Internal: find_rsdp_in_range(uint64 start in rdi, uint64 len in rsi) -> rax or 0
-find_rsdp_in_range:
-    mov     r8, 0x2052545020445352      ; "RSD PTR " little-endian
-    lea     r9, [rdi + rsi]
-.lp:
-    cmp     rdi, r9
-    jae     .none
-    cmp     [rdi], r8
-    jne     .next
-    ; Verify 20-byte RSDP checksum
-    xor     ecx, ecx
-    xor     eax, eax
-.chk:
-    add     al, [rdi + rcx]
-    inc     ecx
-    cmp     ecx, 20
-    jb      .chk
-    test    al, al
-    jnz     .next
-    mov     rax, rdi
-    ret
-.next:
-    add     rdi, 16
-    jmp     .lp
-.none:
-    xor     eax, eax
     ret
 
 ; ============================================================================

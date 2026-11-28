@@ -7,7 +7,7 @@ extern _bss_end
 extern kernel_main
 extern console_putc
 extern console_write_cstr
-extern console_input_irq
+extern console_input_irq, acpi_power_irq
 extern net_timer_irq, net_irq_handler
 extern smp_ping_irq
 extern smp_ping_drain_irq
@@ -192,6 +192,22 @@ idt_setup_and_load:
     lidt    [rel idt64_ptr]
     ret
 
+; A withdrawn slave request can still leave the master's cascade in service.
+pic_irq15:
+    push    rax
+    mov     al, PIC_READ_ISR
+    out     PIC_SLAVE_CMD, al
+    in      al, PIC_SLAVE_CMD
+    test    al, 1 << 7
+    jz      .cascade
+    mov     al, PIC_SPECIFIC_EOI | 7
+    out     PIC_SLAVE_CMD, al
+.cascade:
+    mov     al, PIC_SPECIFIC_EOI | 2
+    out     PIC_MASTER_CMD, al
+    pop     rax
+    iretq
+
 ; A spurious local APIC interrupt does not require an EOI.
 apic_spurious_irq:
     iretq
@@ -304,7 +320,9 @@ isr_stub_table:
 %rep 7
     dq console_input_irq
 %endrep
-    dq 0, 0, net_irq_handler, net_irq_handler
+    dq 0, acpi_power_irq, net_irq_handler, net_irq_handler
+    times PIC_SLAVE_VECTOR + 7 - ($ - isr_stub_table) / 8 dq 0
+    dq pic_irq15
     times APIC_DRAIN_VECTOR - ($ - isr_stub_table) / 8 dq 0
     dq smp_ping_drain_irq
     times APIC_PING_VECTOR - ($ - isr_stub_table) / 8 dq 0

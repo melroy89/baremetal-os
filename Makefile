@@ -5,7 +5,7 @@ QEMU    ?= qemu-system-x86_64
 
 BUILD   := build
 KERNEL  := $(BUILD)/baremetal-os.elf
-OBJECTS := $(addprefix $(BUILD)/,ata.o block.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o rtc.o runtime.o smp.o vfs.o virtio_pci.o virtio_blk.o virtio_net.o)
+OBJECTS := $(addprefix $(BUILD)/,acpi.o ata.o block.o boot.o cpu.o crc32.o disk.o drivers.o echo.o ext2.o fat32.o gpt.o ip.o kernel.o net.o pages.o pci.o ramfs.o rtc.o runtime.o smp.o vfs.o virtio_pci.o virtio_blk.o virtio_net.o)
 BUILD_ID_INPUTS := Makefile $(sort $(wildcard src/*.asm src/*.inc src/*.ld))
 SMP_FIXTURES := $(addprefix $(BUILD)/smp-fixture-,missing_map.elf one_page.elf delayed_ap.elf lost_ping.elf crc32_work.elf)
 FAT_FIXTURES := $(addprefix $(BUILD)/fat32-,interrupt.elf mkdir-linked.elf fault.elf overlap.elf)
@@ -18,7 +18,7 @@ INITRAMFS ?=
 	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage \
 	test-network test-network-e1000 test-network-virtio test-network-dhcp-e1000 \
 	test-network-dhcp-virtio test-ext2 test-ext2-extended \
-	test-network-irq test-console-and-storage
+	test-network-irq test-console-and-storage test-acpi-power
 
 all: os
 
@@ -55,7 +55,7 @@ os-check: $(KERNEL)
 	readelf -l $(KERNEL)
 
 # Start the longer suites first when running with parallel make.
-test: os-check test-ext2 test-storage test-network test-network-irq test-console-and-storage test-boot test-pages test-smp test-ramfs
+test: os-check test-ext2 test-storage test-network test-network-irq test-console-and-storage test-acpi-power test-boot test-pages test-smp test-ramfs
 
 test-boot: $(BUILD)/baremetal-os.iso
 	bash tests/boot_smoke.sh "$(BUILD)"
@@ -130,6 +130,19 @@ test-network-irq: $(BUILD)/net-irq.elf $(BUILD)/net-poll.elf
 
 test-console-and-storage: $(KERNEL) $(BUILD)/ext2-fixture-BEFORE.elf $(BUILD)/console-cancel.elf
 	bash tests/console_storage_boot.sh "$(BUILD)"
+
+test-acpi-power: $(KERNEL) $(BUILD)/acpi-power-fixture.elf
+	bash tests/acpi_power.sh "$(BUILD)"
+
+$(BUILD)/acpi-power-fixture.o: tests/acpi_power_fixture.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/acpi-power-fixture.elf64: $(BUILD)/acpi-power-fixture.o $(OBJECTS) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		--wrap=block_write --wrap=block_flush --wrap=vfs_shutdown $(filter %.o,$^) -o $@
+
+$(BUILD)/acpi-power-fixture.elf: $(BUILD)/acpi-power-fixture.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
 
 $(BUILD)/console-cancel.o: tests/console_cancel.asm | $(BUILD)
 	$(NASM) -f elf64 $< -o $@
