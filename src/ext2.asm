@@ -59,7 +59,7 @@ ext_mount:
     test    rax, rax
     jnz     .done
     cmp     word [rel metadata + 58], 1 ; Clean, no error flag.
-    jne     .bad
+    jne     .unclean
     call    ext_root
     test    rax, rax
     jnz     .done
@@ -77,8 +77,8 @@ ext_mount:
     mov     byte [rbp + mount_volume.mounted], 1
 .done:
     ret
-.bad:
-    lea     rax, [rel bad_super]
+.unclean:
+    lea     rax, [rel unclean_volume]
     ret
 
 ; Read the first superblock sector. CF marks a failed read.
@@ -849,6 +849,7 @@ corrupt:
 
 section .rodata
 bad_super: db "Unsupported or invalid ext2 volume.", 10, 0
+unclean_volume: db "Ext2 volume is unclean. Run e2fsck offline.", 10, 0
 corrupt_text: db "Invalid ext2 metadata or block pointer.", 10, 0
 indexed_directory: db "Invalid or unsupported ext2 directory index.", 10, 0
 not_dir: db "Expected an ext2 directory.", 10, 0

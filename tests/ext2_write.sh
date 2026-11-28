@@ -126,7 +126,7 @@ check_recovery_mounts() {
     for index in "${!recovery_cases[@]}"; do
         printf 'Checking ext2 recovery for %s\n' "${recovery_cases[index]}"
         partition=$((2 * index + 1))
-        console_check "mount -t ext2 disk0p$partition /ext" 'Unsupported or invalid ext2 volume\.'
+        console_check "mount -t ext2 disk0p$partition /ext" 'Ext2 volume is unclean\. Run e2fsck offline\.'
         console_check "mount -t ext2 disk0p$((partition + 1)) /ext" 'Ext2 mounted read-write\.'
         console_check 'cat /ext/Existing' $'\nOriginal\r?\n'
         console_check 'umount /ext' 'Ext2 unmounted\.'

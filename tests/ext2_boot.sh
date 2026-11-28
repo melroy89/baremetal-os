@@ -29,7 +29,7 @@ check_ext2() {
     console_check 'ls /ext/Indexed' 'entry450'
     console_check 'ls /ext/Broken' 'Invalid ext2 metadata or block pointer\.'
     console_check 'mount -t ext2 -o ro disk0p3 /other' 'Unsupported or invalid ext2 volume\.'
-    console_check 'mount -t ext2 -o ro disk0p4 /dirty' 'Unsupported or invalid ext2 volume\.'
+    console_check 'mount -o ro disk0p4 /dirty' 'Ext2 volume is unclean\. Run e2fsck offline\.'
 
     console_check 'cp /ext/Nested/Note.txt /ram/note' 'cp /ext/Nested/Note\.txt'
     console_check 'cat /ram/note' $'\r?\nExt2 payload\r?\n'
