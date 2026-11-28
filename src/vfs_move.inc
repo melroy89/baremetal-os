@@ -4,6 +4,9 @@ extern fat_rename, ext_move
 
 section .text
 command_mv:
+    call    console_cancel_begin
+    test    rax, rax
+    jnz     print_error
     push    rbp
     push    r12
     push    r13

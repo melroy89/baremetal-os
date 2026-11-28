@@ -56,7 +56,9 @@ ext_cat:
     lea     rdi, [rel read_buffer]
     movzx   ebx, byte [rdi + rsi - 1]
     sub     r12, rsi
-    call    console_write
+    call    console_write_interruptible
+    test    rax, rax
+    jnz     .error
     jmp     .next
 .end:
     cmp     bl, 10

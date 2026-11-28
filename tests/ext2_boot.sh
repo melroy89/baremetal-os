@@ -12,6 +12,9 @@ console_check() {
 
 check_ext2() {
     expect_serial 'baremetal> '
+    console_check 'disk list' $'disk0  ATA\r?\n    disk0p1  Ext2\r?\n    disk0p2  FAT32\r?\n    disk0p3  unknown\r?\n    disk0p4  Ext2\r?\n    disk0p5  unknown'
+    console_check 'mount -o ro disk0p3 /ext4' 'Filesystem detection: unknown'
+    console_check 'mount -o ro disk0p5 /ext3' 'Filesystem detection: unknown'
     console_check 'mount -t ext2 disk0p1 /ext' 'Ext2 allocation or ownership could not be verified'
     console_check 'mount -t ext2 -o ro disk0p1 /ext' 'Ext2 mounted read-only\.'
     console_check 'mount disk0p2 /disk' 'FAT32 mounted\.'
@@ -110,7 +113,7 @@ map=$(debugfs -R 'stat /Big' "$volume" 2>/dev/null)
 debugfs -R 'stat /Wide' "$volume" 2>/dev/null | grep -Eq '\(0-[1-9][0-9]*\):|\(1\):'
 
 truncate -s 96M "$disk"
-sgdisk -n 1:2048:+16M -n 2:34816:+64M -t 2:0700 -n 3:165888:+4M -n 4:174080:+4M "$disk" >/dev/null
+sgdisk -n 1:2048:+16M -n 2:34816:+64M -t 2:0700 -n 3:165888:+4M -n 4:174080:+4M -n 5:182272:+4M "$disk" >/dev/null
 dd if="$volume" of="$disk" bs=512 seek=2048 conv=sparse,notrunc status=none
 truncate -s 64M "$files/fat.img"
 mkfs.fat -F 32 "$files/fat.img" >/dev/null
@@ -122,6 +125,10 @@ truncate -s 4M "$files/dirty.img"
 mke2fs -q -F -t ext2 -b 4096 "$files/dirty.img"
 debugfs -w -R 'set_super_value state 2' "$files/dirty.img" >>"$files/debug.log" 2>&1
 dd if="$files/dirty.img" of="$disk" bs=512 seek=174080 conv=sparse,notrunc status=none
+
+truncate -s 4M "$files/journal.img"
+mke2fs -q -F -t ext3 -b 1024 -I 256 -O none,has_journal "$files/journal.img"
+dd if="$files/journal.img" of="$disk" bs=512 seek=182272 conv=sparse,notrunc status=none
 
 run_guest 'read-only ext2 and FAT32' 1 64M check_ext2 -machine pc -kernel "$kernel" \
     -drive "file=$disk,format=raw,if=ide"

@@ -14,8 +14,9 @@ default rel
 %define FAT_ATTR_DIRECTORY 0x10
 %define STORE_DIRECTORY 2
 
+extern console_cancel_check, console_cancel_pending, interrupted_text
+extern console_cancel_commit, console_write_interruptible
 extern block_read
-extern vfs_mount_partition
 extern vfs_dir_busy, path_not_directory
 extern block_write
 extern block_flush
@@ -26,8 +27,8 @@ extern console_putc
 section .text
 extern block_selected
 
-global fat_mount
-global fat_list
+global fat_mount, fat_geometry
+global fat_list, fat_visit
 global fat_cat
 global fat_unmount
 global fat_finish
@@ -41,12 +42,31 @@ global fat_find_dir
 global fat_validate_root
 
 fat_mount:
-    push    rbx
     cmp     byte [rbp + mount_volume.mounted], 0
     jne     .busy
-    call    vfs_mount_partition
+    call    fat_geometry
     test    rax, rax
     jnz     .error
+    mov     byte [rbp + mount_volume.mounted], 1
+    mov     byte [rbp + mount_volume.pending_write], 0
+    mov     byte [rbp + mount_volume.write_error], 0
+    lea     rdi, [rel mounted_text]
+    cmp     byte [rbp + mount_volume.read_only], 0
+    je      .print
+    lea     rdi, [rel fat_mounted_ro]
+    jmp     .print
+.busy:
+    lea     rax, [rel already_mounted]
+    jmp     .error
+.error:
+    mov     rdi, rax
+.print:
+    jmp     console_write_cstr
+
+; Read the boot sector and validate geometry within the GPT range.
+; Return an error in rax, with CF set only for a failed read.
+fat_geometry:
+    push    rbx
     mov     rax, [rbp + mount_volume.volume_base]
     mov     rdx, [rbp + mount_volume.partition_last]
     sub     rdx, rax
@@ -56,7 +76,7 @@ fat_mount:
     lea     rsi, [rel sector_buffer]
     call    block_read
     test    rax, rax
-    jnz     .error
+    jnz     .io
 
     lea     rdi, [rel sector_buffer]
     cmp     word [rdi + 510], 0xAA55
@@ -135,24 +155,17 @@ fat_mount:
     xor     ecx, ecx
 .store_backup:
     mov     [rbp + mount_volume.backup_fsinfo_lba], ecx
-    mov     byte [rbp + mount_volume.mounted], 1
-    mov     byte [rbp + mount_volume.pending_write], 0
-    mov     byte [rbp + mount_volume.write_error], 0
-    lea     rdi, [rel mounted_text]
-    cmp     byte [rbp + mount_volume.read_only], 0
-    je      .print
-    lea     rdi, [rel fat_mounted_ro]
-    jmp     .print
-.busy:
-    lea     rax, [rel already_mounted]
-    jmp     .error
+    xor     eax, eax
+    jmp     .done
 .invalid:
     lea     rax, [rel unsupported_volume]
-.error:
-    mov     rdi, rax
-.print:
+    clc
+    jmp     .done
+.io:
+    stc
+.done:
     pop     rbx
-    jmp     console_write_cstr
+    ret
 
 fat_unmount:
     cmp     byte [rbp + mount_volume.mounted], 0
@@ -190,6 +203,12 @@ fat_list:
     test    rax, rax
     jnz     print_error
     ret
+
+; edi = directory, rdx = callback(name, length, flags).
+fat_visit:
+    mov     esi, edi
+    mov     edi, 3
+    jmp     scan_directory
 
 fat_cat:
     cmp     byte [rbp + mount_volume.mounted], 0
@@ -239,7 +258,9 @@ fat_cat:
     sub     r12d, esi
     lea     rdi, [rel sector_buffer]
     movzx   r15d, byte [rdi + rsi - 1]
-    call    console_write
+    call    console_write_interruptible
+    test    rax, rax
+    jnz     .error
     test    r12d, r12d
     jz      .newline
     inc     r14
@@ -288,6 +309,7 @@ scan_directory:
     push    r13
     push    r14
     push    r15
+    push    rdx                         ; Visitor in mode 3.
     mov     r15d, edi
     mov     qword [rel slot_lba], 0
     mov     dword [rel slot_dir_cluster], 0
@@ -327,6 +349,8 @@ scan_directory:
     test    byte [rsi + 11], 0x08      ; Skip volume labels.
     jnz     .advance
     cmp     r15d, 1
+    je      .list_entry
+    cmp     r15d, 3
     je      .list_entry
     lea     rdi, [rel name_buf]
     xor     ecx, ecx
@@ -368,7 +392,12 @@ scan_directory:
     cmp     byte [rsi], '.'
     je      .advance
     mov     rdi, rsi
-    call    print_name
+    xor     esi, esi
+    cmp     r15d, 3
+    cmove   rsi, [rsp]
+    call    emit_short_name
+    test    rax, rax
+    jnz     .done
     jmp     .advance
 .deleted:
     mov     al, [rel pending_lfn]
@@ -424,6 +453,7 @@ scan_directory:
 .duplicate:
     lea     rax, [rel duplicate_name]
 .done:
+    add     rsp, 8
     pop     r15
     pop     r14
     pop     r13
@@ -499,9 +529,11 @@ short_name:
     stc
     ret
 
-print_name:
+; rdi = directory entry, rsi = optional visitor.
+emit_short_name:
     mov     dl, [rdi + 11]
     sub     rsp, 24
+    mov     [rsp + 16], rsi
     mov     rsi, rdi
     mov     rdi, rsp
     mov     ecx, 8
@@ -525,6 +557,8 @@ print_name:
 .end_ext:
     loop    .ext
 .newline:
+    cmp     qword [rsp + 16], 0
+    jne     .visit
     test    dl, 0x10
     jz      .end_line
     mov     al, '/'
@@ -536,6 +570,28 @@ print_name:
     sub     rsi, rsp
     mov     rdi, rsp
     call    console_write
+    xor     eax, eax
+    jmp     .done
+.visit:
+    ; Match the aliases the FAT32 operand parser can actually open.
+    mov     byte [rdi], 0
+    sub     rdi, rsp
+    mov     [rsp + 13], dil
+    mov     [rsp + 14], dl
+    mov     rdi, rsp
+    call    short_name
+    jc      .unusable
+    mov     rdi, rsp
+    movzx   esi, byte [rsp + 13]
+    movzx   edx, byte [rsp + 14]
+    and     edx, 0x10
+    shr     edx, 4                     ; FAT directory bit -> ENTRY_DIRECTORY.
+    or      edx, ENTRY_FOLD_CASE
+    call    [rsp + 16]
+    jmp     .done
+.unusable:
+    xor     eax, eax
+.done:
     add     rsp, 24
     ret
 
@@ -642,21 +698,31 @@ read_fat_pair:
 read_sector:
     lea     rsi, [rel sector_buffer]
 read_sector_into:
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     bad_volume_sector
     add     rdi, [rbp + mount_volume.volume_base]
     mov     eax, [rbp + mount_volume.device]
     mov     [rel block_selected], eax
     jmp     block_read
+.done:
+    ret
 write_sector:
     lea     rsi, [rel sector_buffer]
 write_sector_from:
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     bad_volume_sector
     add     rdi, [rbp + mount_volume.volume_base]
     mov     eax, [rbp + mount_volume.device]
     mov     [rel block_selected], eax
     jmp     block_write
+.done:
+    ret
 bad_volume_sector:
     lea     rax, [rel unsupported_volume]
     ret
@@ -751,7 +817,10 @@ fat_store:
     test    rax, rax
     jnz     .error
 
-.prepare:
+    call    console_cancel_commit
+    test    rax, rax
+    jnz     .error
+    ; FSInfo may change, but the unpublished chain can still be freed.
     call    prepare_mutation
     test    rax, rax
     jnz     .write_error
@@ -761,9 +830,10 @@ fat_store:
     test    r13d, r13d
     jz      .persist
 .cluster:
+    mov     edi, 1                  ; Cancellation is safe during this scan.
     call    find_free
     test    rax, rax
-    jnz     .write_error
+    jnz     .allocation_error
     test    edx, edx
     jz      .no_space
     mov     r15d, edx                  ; Newly reserved cluster
@@ -793,6 +863,9 @@ fat_store:
     mov     r15, rax
     mov     ebx, [rbp + mount_volume.sectors_per_cluster]
 .sector:
+    call    console_cancel_pending
+    test    rax, rax
+    jnz     .source_error
     lea     rdi, [rel sector_buffer]
     cmp     qword [rsp + 8], 0
     je      .from_memory
@@ -835,8 +908,14 @@ fat_store:
     jnz     .cluster
 
 .persist:
+    call    console_cancel_pending
+    test    rax, rax
+    jnz     .source_error
+    xor     r14d, r14d
     cmp     qword [rel slot_lba], 0
     jne     .end_marker
+    ; Directory growth can link a new cluster so it must run to completion.
+    inc     r14d
     call    extend_directory
     test    rax, rax
     jnz     .write_error
@@ -894,6 +973,12 @@ fat_store:
     mov     [rbx + 20], ax
     mov     eax, [rel new_size]
     mov     [rbx + 28], eax
+    test    r14d, r14d
+    jnz     .publish
+    call    console_cancel_pending
+    test    rax, rax
+    jnz     .source_error
+.publish:
     mov     rdi, [rel slot_lba]
     call    write_sector
     test    rax, rax
@@ -922,6 +1007,11 @@ fat_store:
     lea     rax, [rel directory_exists]
     jmp     .error
 
+.allocation_error:
+    lea     rdx, [rel interrupted_text]
+    cmp     rax, rdx
+    je      .source_error
+    jmp     .write_error
 .no_space:
     lea     rax, [rel volume_full]
 .source_error:
@@ -1428,11 +1518,19 @@ free_chain:
     pop     rbx
     ret
 
-; A cluster is free only when every FAT marks it free.
+; A cluster is free only when every FAT marks it free. edi allows cancellation.
 find_free:
     push    rbx
+    push    r12
+    mov     r12d, edi
     mov     ebx, [rel alloc_cursor]
 .sector:
+    test    r12d, r12d
+    jz      .range
+    call    console_cancel_pending
+    test    rax, rax
+    jnz     .done
+.range:
     cmp     ebx, [rbp + mount_volume.last_cluster]
     ja      .full
     mov     edi, ebx
@@ -1468,6 +1566,7 @@ find_free:
     xor     eax, eax
     xor     edx, edx
 .done:
+    pop     r12
     pop     rbx
     ret
 
@@ -1506,6 +1605,7 @@ extend_directory:
     push    rbx
     push    r12
     push    r13
+    xor     edi, edi                 ; Directory growth is committed.
     call    find_free
     test    rax, rax
     jnz     .done

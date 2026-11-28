@@ -1,4 +1,4 @@
-name: Boot smoke tests
+name: Kernel tests
 
 on:
   push:

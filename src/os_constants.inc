@@ -93,5 +93,17 @@
 ; --- SMP / Stack sizing ---
 %define OS_MAX_CPUS         64
 %define BSP_STACK_SIZE      65536
+; Directory visitor entry flags.
+%define ENTRY_DIRECTORY     1
+%define ENTRY_FOLD_CASE     2
+%define ENTRY_SYMLINK       4
+; Completion enumerates the virtual root or a filtered set of mount points.
+%define VISIT_ROOT          0
+%define VISIT_MOUNTS        1
+%define VISIT_FAT_MOUNTS    2
+%define VISIT_EXT_ROOT      3
+
+%define GPT_MAX_ENTRIES     128
+%define CONSOLE_PROMPT      "baremetal> "
 %define LINE_BUF_SIZE       1024
 %define LINE_TOO_LONG       -2

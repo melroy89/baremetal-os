@@ -13,17 +13,21 @@ For direct QEMU boot with `-machine pc`, add one of these drives. Use `format=qc
 
 ## Disk commands
 
-| Command                               | Action                                             |
-| ------------------------------------- | -------------------------------------------------- |
-| `disk info [diskN]`                   | Show the disk model and capacity.                  |
-| `disk crc32 [diskN] LBA`              | Checksum one sector by its zero-based decimal LBA. |
-| `disk gpt [diskN]`                    | List partitions and identify the GPT copy in use.  |
-| `disk check [PATH]`                   | Count orphaned FAT32 clusters.                     |
-| `disk repair [PATH]`                  | Reclaim unreferenced FAT32 clusters.               |
-| `mount`                               | List mounted volumes.                              |
-| `mount [-o ro] diskNpM /NAME`         | Mount FAT32 GPT partition `M` of disk `N`.         |
-| `mount -t ext2 [-o ro] diskNpM /NAME` | Mount a supported ext2 partition.                  |
-| `umount /NAME`                        | Flush and unmount a named volume.                  |
+| Command                                | Action                                              |
+| -------------------------------------- | --------------------------------------------------- |
+| `disk list`                            | List usable disks and detect partition filesystems. |
+| `disk info [diskN]`                    | Show the disk model and capacity.                   |
+| `disk crc32 [diskN] LBA`               | Checksum one sector by its zero-based decimal LBA.  |
+| `disk gpt [diskN]`                     | List partitions and identify the GPT copy in use.   |
+| `disk check [PATH]`                    | Count orphaned FAT32 clusters.                      |
+| `disk repair [PATH]`                   | Reclaim unreferenced FAT32 clusters.                |
+| `mount`                                | List mounted volumes.                               |
+| `mount [-o ro] diskNpM /NAME`          | Detect and mount a FAT32 or ext2 partition.         |
+| `mount -t fat32 [-o ro] diskNpM /NAME` | Select FAT32 explicitly.                            |
+| `mount -t ext2 [-o ro] diskNpM /NAME`  | Select ext2 explicitly.                             |
+| `umount /NAME`                         | Flush and unmount a named volume.                   |
+
+`disk list` uses the GPT partition numbers as stored, including gaps. When the primary GPT is invalid it tries the backup. Detection reads within each partition and can report `unknown`, `ambiguous`, or `unreadable`. An explicit `-t` selects the driver, which still validates the volume.
 
 Use `-o ro` for read-only mounts. Writable mounts require a device that can flush writes.
 
@@ -38,7 +42,7 @@ mke2fs -t ext2 volume.img 64M
 If the ext2 volume is on GPT partition 2 of `disk0`, mount it in the guest.
 
 ```text
-mount -t ext2 disk0p2 /ext
+mount disk0p2 /ext
 echo "Saved on ext2" > /ext/note.txt
 cat /ext/note.txt
 umount /ext

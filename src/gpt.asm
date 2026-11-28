@@ -6,7 +6,6 @@ default rel
 
 %define GPT_HEADER_MIN 92
 %define GPT_ENTRY_BYTES 128
-%define GPT_MAX_ENTRIES 128
 %define RANGE_SIZE 16
 
 extern block_init
@@ -20,7 +19,7 @@ extern write_u64
 
 section .text
 global command_gpt
-global gpt_load
+global gpt_load, gpt_load_initialized
 global gpt_partition
 
 command_gpt:
@@ -72,10 +71,14 @@ command_gpt:
 
 ; Read and validate at least one GPT copy. Return zero or an error string.
 gpt_load:
-    push    rbx
     call    block_init
     test    rax, rax
-    jnz     .done
+    jz      gpt_load_initialized
+    ret
+
+; The caller has already initialized the selected disk.
+gpt_load_initialized:
+    push    rbx
     call    block_capacity
     mov     rbx, rax
     dec     rbx

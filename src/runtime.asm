@@ -13,7 +13,7 @@ global memory_usable_bytes
 global memory_map_print
 global memory_map_walk
 global str_eq
-global write_u64
+global write_u64, format_u64
 global write_hex64_raw
 global write_hex32_raw
 global format_hex_raw
@@ -189,6 +189,16 @@ str_eq:
 write_u64:
     sub     rsp, 24
     lea     rsi, [rsp + 24]
+    call    format_u64
+    mov     rdi, rsi
+    mov     rsi, rdx
+    call    console_write
+    add     rsp, 24
+    ret
+
+; rdi = number, rsi = end of buffer. Return rsi = digits and rdx = length.
+format_u64:
+    mov     r8, rsi
     mov     rax, rdi
     mov     ecx, 10
 .next:
@@ -199,12 +209,8 @@ write_u64:
     mov     [rsi], dl
     test    rax, rax
     jnz     .next
-    lea     rdx, [rsp + 24]
+    mov     rdx, r8
     sub     rdx, rsi
-    mov     rdi, rsi
-    mov     rsi, rdx
-    call    console_write
-    add     rsp, 24
     ret
 
 ; Print a fixed-width address or exception value.

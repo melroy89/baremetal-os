@@ -1,6 +1,6 @@
 # Bare Metal OS
 
-[![Boot smoke tests](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml/badge.svg)](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml)
+[![Kernel tests](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml/badge.svg)](https://github.com/melroy89/baremetal-os/actions/workflows/boot-smoke.yml)
 
 Bare Metal OS is a small operating system written in x86-64 assembly and designed for speed and simplicity. It boots directly to an interactive text console and idles the CPU while waiting for input.
 
@@ -58,27 +58,28 @@ For UEFI, install `ovmf` (`ovmf-generic` on Ubuntu 26.04). Replace `-m 64M` with
 
 The console starts at `/`. Run `help` for commands or `ls` to see available volumes.
 
-| Command                       | Action                                             |
-| ----------------------------- | -------------------------------------------------- |
-| `help`                        | List console commands.                             |
-| `info`, `cpu`, `mem`          | Inspect the guest, CPU, and memory.                |
-| `lspci`                       | List PCI devices.                                  |
-| `disk info [diskN]`           | Inspect an attached disk.                          |
-| `net info`                    | Show the Ethernet adapter and IPv4 configuration.  |
-| `ls [PATH]`                   | List a directory or show mounts at `/`.            |
-| `cd PATH`, `pwd`              | Change or show the current directory.              |
-| `cat PATH`                    | Print a file.                                      |
-| `echo [TEXT] > PATH`          | Write text to a file.                              |
-| `touch PATH`                  | Create an empty file.                              |
-| `cp SOURCE DEST`              | Copy a file.                                       |
-| `mkdir PATH`                  | Create a directory on writable FAT32 or ext2.      |
-| `mv SOURCE DEST`              | Rename or move an entry within one volume.         |
-| `rm PATH`                     | Remove a file or an empty directory.               |
-| `mount [diskNpM /NAME]`       | List mounts or mount a FAT32 partition.            |
-| `mount -t ext2 diskNpM /NAME` | Mount a supported ext2 partition.                  |
-| `umount /NAME`                | Unmount a named volume.                            |
-| `uptime`, `log`, `version`    | Check runtime, boot milestones, and build details. |
-| `reboot`, `halt`              | Restart or power off the guest.                    |
+| Command                    | Action                                                |
+| -------------------------- | ----------------------------------------------------- |
+| `help`                     | List console commands.                                |
+| `info`, `cpu`, `mem`       | Inspect the guest, CPU, and memory.                   |
+| `lspci`                    | List PCI devices.                                     |
+| `disk list`                | List disks, GPT partitions, and detected filesystems. |
+| `net info`                 | Show the Ethernet adapter and IPv4 configuration.     |
+| `ls [PATH]`                | List a directory or show mounts at `/`.               |
+| `cd PATH`, `pwd`           | Change or show the current directory.                 |
+| `cat PATH`                 | Print a file.                                         |
+| `echo [TEXT] > PATH`       | Write text to a file.                                 |
+| `touch PATH`               | Create an empty file.                                 |
+| `cp SOURCE DEST`           | Copy a file.                                          |
+| `mkdir PATH`               | Create a directory on writable FAT32 or ext2.         |
+| `mv SOURCE DEST`           | Rename or move an entry within one volume.            |
+| `rm PATH`                  | Remove a file or an empty directory.                  |
+| `mount [diskNpM /NAME]`    | List mounts or autodetect and mount FAT32 or ext2.    |
+| `umount /NAME`             | Unmount a named volume.                               |
+| `uptime`, `log`, `version` | Check runtime, boot milestones, and build details.    |
+| `reboot`, `halt`           | Restart or power off the guest.                       |
+
+**↑/↓** history · **Tab** complete · **Ctrl+L** clear · **Ctrl+C** cancel
 
 ## Documentation
 

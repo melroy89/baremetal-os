@@ -22,6 +22,11 @@ default rel
 %define KEY_PAGE_DOWN   0x101
 %define KEY_HISTORY_UP  0x102
 %define KEY_HISTORY_DOWN 0x103
+%define KEY_LEFT        0x104
+%define KEY_RIGHT       0x105
+%define KEY_HOME        0x106
+%define KEY_END         0x107
+%define KEY_DELETE      0x108
 
 section .text
 
@@ -31,7 +36,7 @@ global serial_try_getc
 global vga_clear
 global vga_set_color
 global vga_putc_utf8
-global console_write
+global console_write, console_write_interruptible
 global console_write_cstr
 global console_putc
 global console_clear
@@ -40,7 +45,7 @@ global console_input_irq
 global net_timer, net_timer_irq
 extern ip_service, ip_checkpoint, net_rx_boundary
 extern net_irq_rearm, net_irq_line
-extern prompt
+extern prompt, shell_complete
 global console_readline
 global ps2_try_getc
 global pit_delay_us
@@ -216,20 +221,10 @@ vga_set_color:
     ret
 
 console_clear:
-    push    rbx
     mov     edi, VGA_ATTR_GREY
     call    vga_clear
-    lea     rbx, [rel serial_clear]
-.next:
-    mov     al, [rbx]
-    test    al, al
-    jz      .done
-    inc     rbx
-    call    serial_putc
-    jmp     .next
-.done:
-    pop     rbx
-    ret
+    lea     rdi, [rel serial_clear]
+    jmp     serial_write_cstr
 
 ; Internal: update hardware VGA cursor via CRTC 0x3D4/0x3D5
 vga_update_cursor:
@@ -600,18 +595,31 @@ console_putc:
     pop     rbx
     ret
 
-; void console_write(const void *buf in rdi, uint64 len in rsi)
-; Batches VGA CRTC hardware cursor update to once per write (4x fewer KVM exits).
+; rdi = bytes, rsi = length. The interruptible form returns an error
+; string or zero. Both forms batch the VGA hardware cursor update.
 console_write:
+    xor     edx, edx
+    jmp     console_write_bytes
+console_write_interruptible:
+    mov     edx, 1
+console_write_bytes:
     push    rbx
     push    r12
     push    r13
+    push    r14
     mov     r12, rdi
     mov     r13, rsi
+    mov     r14d, edx
     xor     ebx, ebx
+.next_batch:
+    test    r14d, r14d
+    jz      .lp
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
 .lp:
     cmp     rbx, r13
-    jae     .done
+    jae     .complete
     movzx   eax, byte [r12 + rbx]
     push    rax
     call    serial_putc
@@ -621,9 +629,18 @@ console_write:
     test    bl, 63
     jnz     .lp
     call    ip_checkpoint
-    jmp     .lp
+    cmp     rbx, r13
+    jb      .next_batch
+.complete:
+    xor     eax, eax
+    test    r14d, r14d
+    jz      .done
+    call    console_cancel_check
 .done:
+    mov     r14, rax
     call    vga_update_cursor
+    mov     rax, r14
+    pop     r14
     pop     r13
     pop     r12
     pop     rbx
@@ -655,7 +672,7 @@ console_write_cstr:
 ; 3. PS/2 Keyboard Driver (0x60 / 0x64 polling, Scancode Set 1 -> ASCII)
 ; ============================================================================
 
-; Return ASCII, a KEY_PAGE_* event, or -1 if there is no key to deliver.
+; Return ASCII, a special key event, or -1 if no key was decoded.
 ps2_try_getc:
     in      al, PS2_STATUS
     test    al, 0x01                    ; Output buffer full?
@@ -686,6 +703,11 @@ ps2_try_getc:
     cmp     al, 0xB6                    ; RShift break
     je      .shift_off
 
+    cmp     al, 0x1D
+    je      .ctrl_left_on
+    cmp     al, 0x9D
+    je      .ctrl_left_off
+
     ; Ignore other key releases (bit 7 set)
     test    al, 0x80
     jnz     .none
@@ -702,8 +724,28 @@ ps2_try_getc:
     movzx   eax, byte [rdx + rax]
     test    eax, eax
     jz      .none
+    cmp     byte [rel ps2_ctrl], 0
+    je      .key
+    or      al, 0x20
+    sub     eax, 'a'
+    cmp     eax, 'z' - 'a'
+    ja      .none
+    inc     eax
+.key:
     ret
 
+.ctrl_left_on:
+    or      byte [rel ps2_ctrl], 1
+    jmp     .none
+.ctrl_left_off:
+    and     byte [rel ps2_ctrl], ~1
+    jmp     .none
+.ctrl_right_on:
+    or      byte [rel ps2_ctrl], 2
+    jmp     .none
+.ctrl_right_off:
+    and     byte [rel ps2_ctrl], ~2
+    jmp     .none
 .shift_on:
     mov     byte [rel ps2_shift], 1
     jmp     .none
@@ -722,30 +764,19 @@ ps2_try_getc:
     jmp     .none
 .extended:
     mov     byte [rel ps2_extended], 0
-    cmp     al, 0x49
-    je      .page_up
-    cmp     al, 0x51
-    je      .page_down
-    cmp     al, 0x48
-    je      .history_up
-    cmp     al, 0x50
-    je      .history_down
+    cmp     al, 0x1D
+    je      .ctrl_right_on
+    cmp     al, 0x9D
+    je      .ctrl_right_off
     cmp     al, 0x1C                    ; Keypad Enter
     je      .translate
     cmp     al, 0x35                    ; Keypad Divide
     je      .translate
-    jmp     .none
-.page_up:
-    mov     eax, KEY_PAGE_UP
-    ret
-.page_down:
-    mov     eax, KEY_PAGE_DOWN
-    ret
-.history_up:
-    mov     eax, KEY_HISTORY_UP
-    ret
-.history_down:
-    mov     eax, KEY_HISTORY_DOWN
+    sub     eax, 0x47
+    cmp     eax, 0x53 - 0x47
+    ja      .none
+    lea     rdx, [rel ps2_extended_keys]
+    movsx   eax, word [rdx + rax * 2]
     ret
 .drain_none:
     in      al, PS2_DATA
@@ -826,202 +857,7 @@ net_timer_irq:
 ; Returns length >= 0 (NUL-terminated), -1 on Ctrl-D, or LINE_TOO_LONG
 ; after consuming an overlong line through its terminator.
 ; ============================================================================
-console_readline:
-    push    rbx
-    push    r12
-    push    r13
-    push    r14
-    push    r15
-    mov     r12, rdi                    ; buf
-    lea     r13, [rsi - 1]              ; max chars (leave room for NUL)
-    xor     ebx, ebx                    ; len = 0
-
-    mov     r14d, 3                   ; Allow three extra batches per HLT.
-    mov     dword [rel history_age], 0
-    mov     byte [rel history_escape], 0
-
-.poll:
-    call    ip_service
-    mov     r15d, eax
-    call    serial_try_getc
-    cmp     eax, -1
-    je      .keyboard
-    call    history_serial_key
-    cmp     eax, -1
-    je      .poll
-    jmp     .got_char
-.keyboard:
-    call    ps2_try_getc
-    cmp     eax, -1
-    jne     .got_char
-    ; A discarded scancode may have left another byte queued.
-    in      al, PS2_STATUS
-    cmp     al, 0xFF
-    je      .sleep
-    test    al, 1
-    jnz     .poll
-.sleep:
-    call    net_irq_rearm
-    test    r14d, r14d
-    jz      .halt
-    test    eax, eax
-    jnz     .more_rx
-    test    r15d, r15d
-    jz      .halt
-    call    net_rx_boundary
-    test    eax, eax
-    jz      .halt
-.more_rx:
-    dec     r14d
-    jmp     .poll
-.halt:
-    ; Interrupts stay masked across the input check. STI defers interrupt
-    ; delivery until after HLT so input arriving during the check wakes us.
-    sti
-    hlt
-    cli
-    mov     r14d, 3
-    jmp     .poll
-
-.got_char:
-    cmp     eax, KEY_HISTORY_UP
-    je      .history_up
-    cmp     eax, KEY_HISTORY_DOWN
-    je      .history_down
-    cmp     eax, KEY_PAGE_UP
-    je      .page_up
-    cmp     eax, KEY_PAGE_DOWN
-    je      .page_down
-    ; Ignore trailing '\n' right after '\r'
-    cmp     eax, 10
-    jne     .not_lf_after_cr
-    cmp     byte [rel last_was_cr], 0
-    je      .enter
-    mov     byte [rel last_was_cr], 0
-    jmp     .poll
-
-.not_lf_after_cr:
-    mov     byte [rel last_was_cr], 0
-
-    cmp     eax, 13                     ; '\r'
-    je      .got_cr
-    cmp     rbx, LINE_TOO_LONG
-    je      .discard_overlong
-    cmp     eax, 4                      ; Ctrl-D (EOF)
-    je      .got_eof
-    cmp     eax, 8                      ; Backspace
-    je      .got_bs
-    cmp     eax, 127                    ; DEL (Backspace over serial)
-    je      .got_bs
-
-    ; Accept printable ASCII & UTF-8 bytes >= 0x20
-    cmp     eax, 0x20
-    jb      .poll
-    cmp     rbx, r13
-    jae     .overflow
-
-    mov     [r12 + rbx], al
-    inc     rbx
-    call    vga_resume
-    movzx   edi, byte [r12 + rbx - 1]
-    call    console_putc
-    jmp     .poll
-
-.overflow:
-    call    vga_resume
-    mov     rbx, LINE_TOO_LONG
-    mov     byte [r12], 0
-    jmp     .poll
-
-.discard_overlong:
-    cmp     eax, 8                      ; Backspace still returns to the live view.
-    je      .resume_discard
-    cmp     eax, 0x20                   ; Text bytes and serial DEL.
-    jb      .poll
-.resume_discard:
-    call    vga_resume
-    jmp     .poll
-
-.got_bs:
-    call    vga_resume
-    test    rbx, rbx
-    jz      .poll
-    dec     rbx
-    ; Echo "\b \b" to COM1 and '\b' to VGA
-    mov     al, 8
-    call    serial_putc
-    mov     al, ' '
-    call    serial_putc
-    mov     al, 8
-    call    serial_putc
-    mov     dil, 8
-    call    vga_putc_utf8
-    call    vga_update_cursor
-    jmp     .poll
-
-.got_cr:
-    mov     byte [rel last_was_cr], 1
-.enter:
-    call    vga_resume
-    cmp     rbx, LINE_TOO_LONG
-    je      .newline
-    mov     byte [r12 + rbx], 0
-    mov     rdi, r12
-    mov     esi, ebx
-    call    history_save
-.newline:
-    mov     edi, 10
-    call    console_putc
-    mov     rax, rbx
-    jmp     .return
-
-.got_eof:
-    call    vga_resume
-    mov     byte [r12 + rbx], 0
-    mov     rax, -1
-.return:
-    pop     r15
-    pop     r14
-    pop     r13
-    pop     r12
-    pop     rbx
-    ret
-.history_up:
-    mov     edx, 1
-    jmp     .history
-.history_down:
-    mov     edx, -1
-.history:
-    mov     byte [rel last_was_cr], 0
-    cmp     rbx, LINE_TOO_LONG
-    je      .poll
-    mov     rdi, r12
-    mov     esi, ebx
-    call    history_recall
-    test    rax, rax
-    js      .poll
-    mov     rbx, rax
-    call    vga_resume
-    mov     edi, 10
-    call    console_putc
-    mov     edi, VGA_ATTR_GREEN
-    call    vga_set_color
-    lea     rdi, [rel prompt]
-    call    console_write_cstr
-    mov     edi, VGA_ATTR_WHITE
-    call    vga_set_color
-    mov     rdi, r12
-    mov     rsi, rbx
-    call    console_write
-    jmp     .poll
-.page_up:
-    mov     edi, VGA_ROWS
-    jmp     .page
-.page_down:
-    mov     edi, -VGA_ROWS
-.page:
-    call    vga_page
-    jmp     .poll
+%include "console_edit.inc"
 
 ; ============================================================================
 ; 4. PIT Channel 2 Delay & RDTSC Calibrated Nanosecond Timer
@@ -1194,6 +1030,10 @@ cyr_ascii_tbl:
     db 'r','s','t','u','f','h','c','c','s','s',"'",'y',"'",'e','u','a'
 
 ; PS/2 Scancode Set 1 -> ASCII (unshifted, 128 bytes)
+ps2_extended_keys:
+    dw KEY_HOME, KEY_HISTORY_UP, KEY_PAGE_UP, -1, KEY_LEFT, -1, KEY_RIGHT
+    dw -1, KEY_END, KEY_HISTORY_DOWN, KEY_PAGE_DOWN, -1, KEY_DELETE
+
 ps2_tbl_norm:
     db 0,   27,  '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 8,   9
     db 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', 10,  0,   'a', 's'
@@ -1227,6 +1067,7 @@ utf8_rem:       resd 1
 vga_attr:       resb 1
 vga_cursor_start: resb 1
 ps2_shift:      resb 1
+ps2_ctrl:       resb 1
 ps2_extended:   resb 1
 ps2_pause_bytes: resb 1
 last_was_cr:    resb 1
@@ -1235,3 +1076,4 @@ vga_ram_row:    resq 1
 vga_ring:       resb VGA_RING_BYTES
 
 %include "history.inc"
+%include "console_input.inc"

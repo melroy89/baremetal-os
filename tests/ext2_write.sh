@@ -49,13 +49,19 @@ check_write() {
     console_check "ls /ext/Full" "$long_name"
     console_check "cat /ext/Full/$long_name" $'\nGrown\r?\n'
     console_check "mkdir /ext/FullDir/$long_name" 'Ext2 directory created\.'
-    console_check "cd /ext/FullDir/$long_name" "$long_name"
+    printf 'cd /ext/FullDir/%s\r' "$long_name" >&"$serial_write"
+    # A horizontally scrolled input row echoes only part of this path.
+    expect_serial 'baremetal> '
+    console_check 'pwd' $'\n'"/ext/FullDir/$long_name"$'\r?\n'
     console_check 'mkdir Nested' 'Ext2 directory created\.'
     console_check 'echo Inside > Nested/File' 'Ext2 file saved\.'
     console_check 'cd /' 'cd /'
     console_check "ls /ext/FullDir/$long_name" 'Nested/'
     console_check 'rm /ext/FullDir' 'Ext2 directory is not empty\.'
-    console_check "cd /ext/FullDir/$long_name/Nested" 'Nested'
+    printf 'cd /ext/FullDir/%s/Nested\r' "$long_name" >&"$serial_write"
+    # A horizontally scrolled input row echoes only part of this path.
+    expect_serial 'baremetal> '
+    console_check 'pwd' $'\n'"/ext/FullDir/$long_name/Nested"$'\r?\n'
     console_check 'rm /ext/FullDir' 'Ext2 directory is in use\.'
     console_check "rm /ext/FullDir/$long_name/Nested" 'Ext2 directory is in use\.'
     console_check 'cd /' 'cd /'

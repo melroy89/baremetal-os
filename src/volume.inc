@@ -3,6 +3,10 @@
 %define VOLUME_MOUNT_NAME_SIZE 32
 %define FS_FAT32 0
 %define FS_EXT2 1
+%define FS_AUTO 0xFF
+%define FS_UNKNOWN 2
+%define FS_AMBIGUOUS 3
+%define FS_UNREADABLE 4
 
 struc mount_volume
     .volume_base:          resq 1

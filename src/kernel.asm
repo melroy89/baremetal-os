@@ -14,12 +14,11 @@ extern g_smp_online_cpus
 extern smp_stack_pages
 extern serial_init
 extern vga_clear
-extern vga_set_color
 extern console_putc
 extern console_clear
 extern console_write_cstr
 extern console_input_init
-extern console_readline
+extern console_readline, console_cancel_end
 extern timer_init
 extern timer_ns
 extern smp_init
@@ -35,6 +34,7 @@ extern command_cpu
 extern command_crc32, command_crc32range
 extern command_lspci
 extern command_disk
+extern command_history
 extern command_net, command_ping
 extern dhcp_start
 extern vfs_shutdown, net_shutdown, virtio_blk_shutdown
@@ -82,13 +82,6 @@ kernel_main:
     call    console_write_cstr
 
 .prompt:
-    mov     edi, VGA_ATTR_GREEN
-    call    vga_set_color
-    lea     rdi, [rel prompt]
-    call    console_write_cstr
-    mov     edi, VGA_ATTR_WHITE
-    call    vga_set_color
-
     lea     rdi, [rel line_buffer]
     mov     esi, LINE_BUF_SIZE
     call    console_readline
@@ -157,6 +150,7 @@ kernel_main:
     je      .unknown
 .invoke:
     call    [rbx + 8]
+    call    console_cancel_end
     jmp     .prompt
 
 .unknown:
@@ -328,7 +322,7 @@ power_error:
 
 section .rodata
 welcome:           db "Bare Metal OS | x86-64", 10, "Type help for commands.", 10, 0
-prompt:            db "baremetal> ", 0
+prompt:            db CONSOLE_PROMPT, 0
 unknown:           db "Unknown command. Type help.", 10, 0
 command_too_long:  db "Command too long.", 10, 0
 bad_boot:          db "Invalid Multiboot bootloader magic.", 10, 0
@@ -348,13 +342,15 @@ help_text:
     help_row "mem",      "Show pages managed, used and free by the kernel"
     help_row "memmap",   "Show the Multiboot memory map"
     help_row "lspci",    "List PCI devices (--all checks every function)"
-    help_row "disk",     "Inspect disks and GPT partitions, or check and repair FAT32"
+    help_row "disk list", "List disks and identify filesystems on GPT partitions"
+    help_row "disk",     "Inspect a disk or check and repair FAT32"
     help_row "net",      "Configure IPv4 or inspect Ethernet frames"
     help_row "ping HOST", "Send an IPv4 echo request"
     help_row "ls [PATH]", "List a directory or show mounts at /"
     help_row "cd PATH", "Change the current directory"
     help_row "pwd", "Print the current directory"
-    help_row "mount",    "List volumes or mount FAT32 or ext2"
+    help_row "mount",    "List volumes or autodetect FAT32 and ext2 on diskNpM"
+    db "           Options -o ro and -t fat32 or -t ext2", 10
     help_row "umount",   "Unmount the volume at /NAME"
     help_row "cat PATH", "Print a file"
     help_row "crc32 FILE", "Show a RAM file's CRC-32 checksum"
@@ -371,6 +367,7 @@ help_text:
     help_row "rm PATH",  "Remove a file or an empty directory"
     help_row "uptime",   "Show time since boot"
     help_row "log",      "Show boot milestones"
+    help_row "history",  "Show recent console commands"
     help_row "version",  "Show the kernel version and build identifier"
     help_row "clear",    "Clear the console"
     help_row "reboot",   "Restart the machine"
@@ -390,7 +387,7 @@ milliseconds_text: db " ms", 10, 0
 poweroff_text:     db "Powering off...", 10, 0
 reboot_text:       db "Rebooting...", 10, 0
 reboot_failed:     db "Reboot failed.", 10, 0
-version_text:      db "Bare Metal OS 1.5.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
+version_text:      db "Bare Metal OS 1.6.0 (x86-64)", 10, "Build: ", BUILD_ID, 10, 0
 log_text:          db "Boot log", 10, 0
 event_multiboot:   db "Multiboot handoff accepted.", 10, 0
 event_timer:       db "Timer initialized.", 10, 0
@@ -426,6 +423,7 @@ touch_name:        db "touch", 0
 mkdir_name:        db "mkdir", 0
 uptime_name:       db "uptime", 0
 log_name:          db "log", 0
+history_name:      db "history", 0
 version_name:      db "version", 0
 clear_name:        db "clear", 0
 reboot_name:       db "reboot", 0
@@ -465,6 +463,7 @@ commands:
     dq rm_name, command_rm, 1
     dq uptime_name, command_uptime, 0
     dq log_name, command_log, 0
+    dq history_name, command_history, 0
     dq version_name, command_version, 0
     dq clear_name, console_clear, 0
     dq reboot_name, command_reboot, 0
@@ -480,3 +479,4 @@ boot_log_count:    resd 1
 boot_cpus_started: resd 1
 boot_cpus_total:   resd 1
 line_buffer:       resb LINE_BUF_SIZE
+%include "completion.inc"

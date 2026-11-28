@@ -2,30 +2,45 @@
 
 Type `help` at the `baremetal>` prompt for the full command list.
 
-At the VGA prompt, use **Page Up** and **Page Down** to browse up to 256 previous rows. Typing returns to the live screen, and `clear` discards the VGA history. On serial, use the host terminal's scrollback. Use **Up** and **Down** to recall the last 16 commands on either console. Recall redraws the editable command at a fresh prompt.
+The VGA and serial editors support these shortcuts. Use an ANSI serial terminal with at least 80 columns.
+
+| Keys                                   | Action                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------ |
+| **Left**, **Right**, **Home**, **End** | Move the cursor. **Ctrl+A** and **Ctrl+E** also move to the start and end.           |
+| **Backspace**, **Delete**              | Erase before or after the cursor.                                                    |
+| **Up**, **Down**                       | Recall up to 16 commands. Going past the newest entry restores the draft and cursor. |
+| **Ctrl+W**, **Ctrl+U**, **Ctrl+K**     | Erase the preceding word, to the start, or to the end, respectively.                 |
+| **Ctrl+L**                             | Clear the visible screen and redraw the draft. Keeps scrollback.                     |
+| **Ctrl+D**                             | Delete forward in a draft. At an empty prompt, halt cleanly.                         |
+| **Ctrl+C**                             | Discard the draft or interrupt `cat`, `echo`, `cp`, or `mv`.                       |
+| **Tab**                                | Complete a command, path, or mount partition using the text before the cursor.       |
+| **Page Up**, **Page Down**             | Browse up to 256 rows of VGA scrollback.                                             |
+
+Long lines scroll horizontally and can be up to 1,023 bytes. In a serial session, use your terminal’s scrollback. File updates continue once they can no longer be cancelled safely.
 
 ## System and session
 
-| Command                | Action                                                        |
-| ---------------------- | ------------------------------------------------------------- |
-| `help`                 | Show console commands.                                        |
-| `info`                 | Show started CPUs and usable RAM.                             |
-| `cpu`                  | Show the boot CPU model and capabilities.                     |
-| `cpu ping`             | Check which secondary CPUs respond.                           |
-| `mem`                  | Show used and free 4 KiB pages.                               |
-| `memmap`               | Show the Multiboot memory map.                                |
-| `lspci`                | List PCI addresses, IDs, and classes.                         |
-| `lspci --all`          | Probe every PCI function, including slots without function 0. |
-| `uptime`               | Show time since boot.                                         |
-| `log`                  | Show boot milestones.                                         |
-| `version`              | Show the kernel version and build ID.                         |
-| `clear`                | Clear the console.                                            |
-| `reboot`               | Restart the guest.                                            |
-| `halt`, `quit`, `exit` | Power off the guest.                                          |
+| Command                | Action                                                                  |
+| ---------------------- | ----------------------------------------------------------------------- |
+| `help`                 | Show console commands.                                                  |
+| `info`                 | Show started CPUs and usable RAM.                                       |
+| `cpu`                  | Show the boot CPU model and capabilities.                               |
+| `cpu ping`             | Check which secondary CPUs respond.                                     |
+| `mem`                  | Show used and free 4 KiB pages.                                         |
+| `memmap`               | Show the Multiboot memory map.                                          |
+| `lspci`                | List PCI addresses, IDs, and classes.                                   |
+| `lspci --all`          | Probe every PCI function, including slots without function 0.           |
+| `uptime`               | Show time since boot.                                                   |
+| `log`                  | Show boot milestones.                                                   |
+| `history`              | Show up to 16 recent commands, oldest first, including this invocation. |
+| `version`              | Show the kernel version and build ID.                                   |
+| `clear`                | Clear the console and VGA scrollback.                                    |
+| `reboot`               | Restart the guest.                                                      |
+| `halt`, `quit`, `exit` | Power off the guest.                                                    |
 
 ## Disk storage
 
-Use `disk info` to inspect the disk and `disk gpt` to list its partitions. Use `mount disk0pN /disk` for FAT32 or `mount -t ext2 disk0pN /ext` for ext2. Replace `N` with the GPT partition number. Use `disk1` for modern virtio-blk.
+Use `disk list` to find partition names, then mount one with a command such as `mount disk1p1 /src`. The shell detects FAT32 and ext2 automatically.
 
 See the [storage guide](storage.md) for mount options and disk commands.
 

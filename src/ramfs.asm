@@ -30,7 +30,7 @@ default rel
 %define INDEX_PAGE_DATA   4
 %define INDEX_PAGE_RECORDS ((PAGE_SIZE - INDEX_PAGE_DATA) / INDEX_RECORD_SIZE)
 
-extern console_write
+extern console_write_interruptible, console_cancel_commit
 extern console_write_cstr
 extern console_putc
 extern str_eq
@@ -39,7 +39,7 @@ extern page_free
 
 section .text
 global ramfs_mount
-global ramfs_ls
+global ramfs_ls, ramfs_visit
 global ramfs_cat
 global ramfs_write
 global ramfs_touch
@@ -432,7 +432,12 @@ ramfs_ls:
     cmp     qword [rel writable_head], 0
     je      ramfs_unavailable
 .list:
+    xor     edx, edx
+; rdx = optional callback(name, length, flags).
+ramfs_visit:
     push    rbx
+    push    r12
+    mov     r12, rdx
     mov     ebx, [rel archive_index_head]
 .archive_entry:
     test    rbx, rbx
@@ -440,7 +445,9 @@ ramfs_ls:
     cmp     byte [rbx + INDEX_SHADOWED], 0
     jne     .next_archive
     mov     edi, [rbx + INDEX_HEADER]
-    call    print_filename
+    call    .emit
+    test    rax, rax
+    jnz     .done
 .next_archive:
     mov     ebx, [rbx + INDEX_ORDER_NEXT]
     jmp     .archive_entry
@@ -448,21 +455,40 @@ ramfs_ls:
     mov     rbx, [rel writable_head]
 .writable_entry:
     test    rbx, rbx
-    jz      .done
+    jz      .success
     lea     rdi, [rbx + FILE_NAME]
-    call    print_filename
+    call    .emit
+    test    rax, rax
+    jnz     .done
     mov     rbx, [rbx + FILE_NEXT]
     jmp     .writable_entry
+.success:
+    xor     eax, eax
 .done:
+    pop     r12
     pop     rbx
     ret
+.emit:
+    test    r12, r12
+    jz      print_filename
+    xor     esi, esi
+.length:
+    cmp     byte [rdi + rsi], 0
+    je      .visit
+    inc     esi
+    jmp     .length
+.visit:
+    xor     edx, edx
+    jmp     r12
 
 print_filename:
     sub     rsp, 8
     call    console_write_cstr
     mov     edi, 10
+    call    console_putc
+    xor     eax, eax
     add     rsp, 8
-    jmp     console_putc
+    ret
 
 ramfs_cat:
     cmp     byte [rdi], 0
@@ -540,7 +566,12 @@ ramfs_write:
 
     mov     rdi, r12
     call    find_writable
+    mov     r8, rax
+    call    console_cancel_commit
+    test    rax, rax
+    jnz     .interrupted
     xor     r15d, r15d
+    mov     rax, r8
     test    rax, rax
     jnz     .store
     mov     r15, rdx
@@ -567,6 +598,9 @@ ramfs_write:
     jz      .done
     mov     byte [rax + INDEX_SHADOWED], 1
     jmp     .done
+.interrupted:
+    mov     rdi, rax
+    jmp     .error
 .bad_name:
     lea     rdi, [rel invalid_name]
     jmp     .error
@@ -632,14 +666,21 @@ print_file:
     xor     ebx, ebx
     cmp     byte [rdi + rsi - 1], 10
     setne   bl
-    call    console_write
-    test    ebx, ebx
+    call    console_write_interruptible
+    mov     edx, ebx
     pop     rbx
+    test    rax, rax
+    jnz     .interrupted
+    test    edx, edx
     jz      .done
     mov     edi, 10
     jmp     console_putc
 .done:
     ret
+
+.interrupted:
+    mov     rdi, rax
+    jmp     console_write_cstr
 
 ramfs_not_found:
     cmp     byte [rel archive_mounted], 0

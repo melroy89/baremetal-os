@@ -6,6 +6,9 @@ section .text
 global command_cp
 
 command_cp:
+    call    console_cancel_begin
+    test    rax, rax
+    jnz     print_error
     push    rbx
     push    rbp
     push    r12

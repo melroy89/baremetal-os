@@ -17,8 +17,8 @@ INITRAMFS ?=
 .PHONY: all os os-check os-run os-iso clean \
 	test test-boot test-pages test-smp test-ramfs test-ata test-gpt test-fat32 test-storage \
 	test-network test-network-e1000 test-network-virtio test-network-dhcp-e1000 \
-	test-network-dhcp-virtio test-ext2 test-ext2-extended test-followups \
-	test-network-irq test-device-followups
+	test-network-dhcp-virtio test-ext2 test-ext2-extended \
+	test-network-irq test-console-and-storage
 
 all: os
 
@@ -30,14 +30,14 @@ $(BUILD):
 $(BUILD)/%.o: src/%.asm src/os_constants.inc | $(BUILD)
 	$(NASM) -f elf64 -Isrc/ -I$(BUILD)/ $< -o $@
 
-$(BUILD)/kernel.o: $(BUILD)/build_id.inc
+$(BUILD)/kernel.o: $(BUILD)/build_id.inc src/completion.inc src/completion_operand.inc
 $(BUILD)/virtio_pci.o $(BUILD)/virtio_blk.o $(BUILD)/virtio_net.o: src/virtio_pci.inc
-$(BUILD)/drivers.o: src/history.inc
+$(BUILD)/drivers.o: src/history.inc src/console_edit.inc src/console_input.inc
 $(BUILD)/ip.o: src/udp.inc src/dhcp.inc src/dns.inc
 $(BUILD)/ext2.o: src/ext2_verify.inc src/ext2_features.inc src/ext2_tree.inc src/ext2_sparse.inc src/ext2_write.inc src/ext2_remove.inc src/ext2_move.inc src/ext2_namespace.inc
 $(BUILD)/fat32.o: src/fat32_check.inc src/fat32_copy.inc src/fat32_move.inc
 $(BUILD)/vfs.o: src/vfs_copy.inc src/vfs_read.inc src/vfs_move.inc src/vfs_namespace.inc
-$(BUILD)/ext2.o $(BUILD)/fat32.o $(BUILD)/vfs.o: src/volume.inc
+$(BUILD)/disk.o $(BUILD)/ext2.o $(BUILD)/fat32.o $(BUILD)/vfs.o: src/volume.inc
 
 $(BUILD)/build_id.inc: $(BUILD_ID_INPUTS) | $(BUILD)
 	@hash=$$(sha256sum $(BUILD_ID_INPUTS)) && \
@@ -55,7 +55,7 @@ os-check: $(KERNEL)
 	readelf -l $(KERNEL)
 
 # Start the longer suites first when running with parallel make.
-test: os-check test-ext2 test-storage test-network test-followups test-boot test-pages test-smp test-ramfs
+test: os-check test-ext2 test-storage test-network test-network-irq test-console-and-storage test-boot test-pages test-smp test-ramfs
 
 test-boot: $(BUILD)/baremetal-os.iso
 	bash tests/boot_smoke.sh "$(BUILD)"
@@ -122,16 +122,24 @@ test-ext2: $(KERNEL) $(EXT2_FAULTS)
 	bash tests/ext2_write.sh "$(BUILD)"
 	bash tests/ext2_geometry.sh "$(BUILD)"
 
-test-ext2-extended: test-ext2 test-followups $(addprefix $(BUILD)/ext2-fixture-,STREAM_READ.elf STREAM_WRITE.elf STREAM_FLUSH.elf)
+test-ext2-extended: test-ext2 $(addprefix $(BUILD)/ext2-fixture-,STREAM_READ.elf STREAM_WRITE.elf STREAM_FLUSH.elf)
 	bash tests/ext2_recovery_extended.sh "$(BUILD)"
-
-test-followups: test-network-irq test-device-followups
 
 test-network-irq: $(BUILD)/net-irq.elf $(BUILD)/net-poll.elf
 	bash tests/network_boot.sh "$(BUILD)" irq
 
-test-device-followups: $(KERNEL) $(BUILD)/ext2-fixture-BEFORE.elf
-	bash tests/followups_boot.sh "$(BUILD)"
+test-console-and-storage: $(KERNEL) $(BUILD)/ext2-fixture-BEFORE.elf $(BUILD)/console-cancel.elf
+	bash tests/console_storage_boot.sh "$(BUILD)"
+
+$(BUILD)/console-cancel.o: tests/console_cancel.asm | $(BUILD)
+	$(NASM) -f elf64 $< -o $@
+
+$(BUILD)/console-cancel.elf64: $(BUILD)/console-cancel.o $(OBJECTS) src/linker.ld
+	$(LD) -m elf_x86_64 -T src/linker.ld -z max-page-size=0x1000 -z noexecstack \
+		--wrap=block_read --wrap=block_write --wrap=block_flush $(filter %.o,$^) -o $@
+
+$(BUILD)/console-cancel.elf: $(BUILD)/console-cancel.elf64
+	$(OBJCOPY) --strip-all -O elf32-i386 $< $@
 
 $(BUILD)/net-irq.o: tests/net_irq.asm | $(BUILD)
 	$(NASM) -f elf64 $< -o $@

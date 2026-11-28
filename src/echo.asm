@@ -2,7 +2,7 @@
 bits 64
 default rel
 
-extern console_write
+extern console_write_interruptible, console_cancel_begin
 extern console_write_cstr
 extern console_putc
 %include "os_constants.inc"
@@ -13,6 +13,9 @@ section .text
 global command_echo
 
 command_echo:
+    call    console_cancel_begin
+    test    rax, rax
+    jnz     .interrupted
     mov     rsi, rdi                    ; Start of text
     mov     rcx, rdi                    ; Scan cursor
     cmp     byte [rcx], '"'
@@ -63,9 +66,11 @@ command_echo:
     sub     rsp, 8
     mov     rdi, rsi
     mov     rsi, rdx
-    call    console_write
-    mov     edi, 10
+    call    console_write_interruptible
     add     rsp, 8
+    test    rax, rax
+    jnz     .interrupted
+    mov     edi, 10
     jmp     console_putc
 
 .redirect_unquoted:
@@ -113,6 +118,10 @@ command_echo:
     mov     rdi, r8
     lea     rsi, [rel output_bytes]
     jmp     vfs_write
+
+.interrupted:
+    mov     rdi, rax
+    jmp     console_write_cstr
 
 .usage:
     lea     rdi, [rel echo_usage]

@@ -42,34 +42,60 @@ struc ext_inode
     alignb 8
 endstruc
 
-extern vfs_mount_partition, block_read, block_read_range
+extern block_read, block_read_range
 extern block_write, block_flush, page_alloc, page_free, ip_checkpoint
 extern console_write, console_write_cstr, console_putc
+extern console_cancel_check, console_cancel_commit, interrupted_text
 
 section .text
 extern block_selected
 
+global ext_geometry, ext_visit
 global ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
 
-; rbp = mount, rdi = GPT partition number. Publish after validating root.
+; Publish only after validating the root and mount-specific state.
 ext_mount:
-    push    rbx
-    call    vfs_mount_partition
+    call    ext_geometry
     test    rax, rax
     jnz     .done
+    cmp     word [rel metadata + 58], 1 ; Clean, no error flag.
+    jne     .bad
+    call    ext_root
+    test    rax, rax
+    jnz     .done
+    mov     byte [rbp + mount_volume.write_error], 0
+    cmp     byte [rbp + mount_volume.read_only], 0
+    jne     .publish
+    call    ext_verify_allocations
+    test    rax, rax
+    jnz     .done
+    xor     edi, edi
+    call    ext_set_state
+    test    rax, rax
+    jnz     .done
+.publish:
+    mov     byte [rbp + mount_volume.mounted], 1
+.done:
+    ret
+.bad:
+    lea     rax, [rel bad_super]
+    ret
+
+; Read the first superblock sector. CF marks a failed read.
+ext_geometry:
+    push    rbx
     mov     rdi, [rbp + mount_volume.volume_base]
     add     rdi, 2
+    jc      .bad
     cmp     rdi, [rbp + mount_volume.partition_last]
     ja      .bad
     lea     rbx, [rel metadata]
     mov     rsi, rbx
     call    block_read
     test    rax, rax
-    jnz     .done
+    jnz     .io
 
     cmp     word [rbx + 56], 0xEF53
-    jne     .bad
-    cmp     word [rbx + 58], 1          ; Clean, no error flag.
     jne     .bad
     mov     ecx, [rbx + 24]
     cmp     ecx, 2
@@ -196,36 +222,31 @@ ext_mount:
     mov     [rbp + mount_volume.ext_gdt_blocks], eax
     cmp     eax, [rbp + mount_volume.ext_blocks_group]
     jae     .bad
-    call    ext_root
-    test    rax, rax
-    jnz     .done
-    mov     byte [rbp + mount_volume.write_error], 0
-    cmp     byte [rbp + mount_volume.read_only], 0
-    jne     .publish
-    call    ext_verify_allocations
-    test    rax, rax
-    jnz     .done
-    xor     edi, edi
-    call    ext_set_state
-    test    rax, rax
-    jnz     .done
-.publish:
-    mov     byte [rbp + mount_volume.mounted], 1
+    xor     eax, eax
+    jmp     .done
+.bad:
+    lea     rax, [rel bad_super]
+    clc
+    jmp     .done
+.io:
+    stc
 .done:
     pop     rbx
     ret
-.bad:
-    lea     rax, [rel bad_super]
-    jmp     .done
 
 ; rdi = volume-relative sector, rsi = destination.
 read_sector:
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     corrupt
     add     rdi, [rbp + mount_volume.volume_base]
     mov     eax, [rbp + mount_volume.device]
     mov     [rel block_selected], eax
     jmp     block_read
+.done:
+    ret
 
 ; edi = inode number, rsi = decoded inode destination.
 load_inode:
@@ -477,9 +498,21 @@ ext_find_dir:
 
 ; edi = directory inode. Return an error in rax.
 ext_list:
+    xor     edx, edx
     mov     esi, edi
     xor     edi, edi
     jmp     scan_dir
+
+; edi = directory, rdx = callback(name, length, flags). A visitor may
+; resolve another path, so retain this scan's inode and block privately.
+ext_visit:
+    sub     rsp, EXT_BLOCK + ext_inode_size + 8
+    mov     rcx, rsp
+    mov     esi, edi
+    xor     edi, edi
+    call    scan_dir
+    add     rsp, EXT_BLOCK + ext_inode_size + 8
+    ret
 
 ; rdi = optional child name (null lists names), esi = directory inode.
 scan_dir:
@@ -488,20 +521,40 @@ scan_dir:
     push    r13
     push    r14
     push    r15
-    sub     rsp, 16
+    sub     rsp, 32
+    mov     [rsp + 8], rdx
     mov     r12, rdi
+    lea     rax, [rel dir_inode]
+    mov     [rsp + 16], rax
+    lea     rax, [rel dir_data]
+    mov     [rsp + 24], rax
+    test    r12, r12
+    jnz     .load_directory
+    test    rdx, rdx
+    jz      .load_directory
+    mov     [rsp + 16], rcx
+    lea     rax, [rcx + ext_inode_size]
+    mov     [rsp + 24], rax
+.load_directory:
     mov     edi, esi
     call    directory_inode
     test    rax, rax
     jnz     .done
+    lea     rsi, [rel dir_inode]
+    mov     rdi, [rsp + 16]
+    cmp     rdi, rsi
+    je      .start
+    mov     ecx, ext_inode_size / 8
+    rep     movsq
+.start:
     xor     r13d, r13d
 .block:
-    mov     rax, [rel dir_inode + ext_inode.size]
+    mov     rsi, [rsp + 16]
+    mov     rax, [rsi + ext_inode.size]
     ext_block_index rax
     cmp     r13, rax
     jae     .end
     mov     rdi, r13
-    lea     rsi, [rel dir_inode]
     call    map_block
     test    rax, rax
     jnz     .done
@@ -509,7 +562,7 @@ scan_dir:
     jz      .bad
     mov     ebx, edx
     imul    rbx, [rbp + mount_volume.ext_sectors]
-    lea     r14, [rel dir_data]
+    mov     r14, [rsp + 24]
     mov     r15d, [rbp + mount_volume.ext_sectors]
 .read:
     mov     rdi, rbx
@@ -521,7 +574,7 @@ scan_dir:
     add     r14, BLOCK_SIZE
     dec     r15d
     jnz     .read
-    lea     rbx, [rel dir_data]
+    mov     rbx, [rsp + 24]
     mov     r15, r14
 .entry:
     mov     rax, r15
@@ -591,6 +644,8 @@ scan_dir:
     jnz     .done
     lea     rdi, [rbx + 8]
     mov     esi, [rsp]
+    cmp     qword [rsp + 8], 0
+    jne     .visit
     call    console_write
     cmp     dword [rel entry_inode + ext_inode.mode], EXT_DIR
     jne     .newline
@@ -599,6 +654,19 @@ scan_dir:
 .newline:
     mov     edi, 10
     call    console_putc
+    jmp     .advance
+.visit:
+    xor     edx, edx
+    mov     eax, [rel entry_inode + ext_inode.mode]
+    cmp     eax, EXT_DIR
+    sete    dl
+    cmp     eax, EXT_SYMLINK
+    jne     .emit
+    or      edx, ENTRY_SYMLINK
+.emit:
+    call    [rsp + 8]
+    test    rax, rax
+    jnz     .done
 .advance:
     mov     rbx, r14
     cmp     rbx, r15
@@ -614,7 +682,7 @@ scan_dir:
 .bad:
     lea     rax, [rel corrupt_text]
 .done:
-    add     rsp, 16
+    add     rsp, 32
     pop     r15
     pop     r14
     pop     r13
@@ -669,6 +737,9 @@ ext_read_at:
 .copy:
     test    r14d, r14d
     jz      .success
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
     mov     rbx, r13
     ext_block_index rbx
     cmp     rbx, [rel cached_logical]

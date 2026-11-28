@@ -23,6 +23,7 @@ struc path_state
     .text: resb LINE_BUF_SIZE
 endstruc
 
+extern ramfs_visit, fat_visit, ext_visit
 extern ramfs_ls, ramfs_cat, ramfs_write, ramfs_rm, ramfs_touch
 extern fat_mount, fat_unmount, fat_list, fat_cat
 extern fat_write, fat_rm, fat_touch, fat_find_dir, fat_check, fat_repair
@@ -30,8 +31,10 @@ extern fat_mkdir
 extern fat_validate_root
 extern ext_mount, ext_root, ext_find_dir, ext_list, ext_open, ext_read_at
 extern ext_write, ext_copy_write, ext_copy_stream, ext_copy_sparse, ext_touch, ext_mkdir, ext_rm, ext_finish, fat_finish
-extern console_write, parse_lba, crc32_update, write_hex32_raw
+extern console_cancel_begin, console_cancel_check, console_write_interruptible
+extern parse_lba, crc32_update, write_hex32_raw
 extern gpt_load, gpt_partition
+extern disk_probe, disk_probe_labels
 extern block_selected, block_writable
 extern console_write_cstr, console_putc, str_eq
 
@@ -39,7 +42,7 @@ section .text
 global command_ls, command_cat, command_rm, command_touch, command_cd, command_pwd
 global command_mkdir
 global vfs_shutdown, vfs_dir_busy, path_not_directory
-global vfs_write, command_mount, command_umount, vfs_mount_partition
+global vfs_write, command_mount, command_umount
 global disk_check_volume, disk_repair_volume
 
 command_pwd:
@@ -92,6 +95,9 @@ command_ls:
     ret
 
 command_cat:
+    call    console_cancel_begin
+    test    rax, rax
+    jnz     print_error
     cmp     byte [rdi], 0
     je      cat_missing
     lea     rsi, [rel cat_handlers]
@@ -505,7 +511,7 @@ vfs_mount_partition:
     push    rbx
     call    parse_lba
     jc      .partition
-    cmp     rax, 128
+    cmp     rax, GPT_MAX_ENTRIES
     ja      .partition
     mov     ebx, eax
     mov     eax, [rbp + mount_volume.device]
@@ -567,49 +573,192 @@ vfs_mount_overlap:
     mov     eax, 1
     ret
 
+global vfs_visit_path, vfs_visit_mounts, vfs_path_is_directory
+
+; Resolve a directory using the same rules as cd and ls.
+vfs_path_is_directory:
+    xor     esi, esi
+    jmp     resolve_path
+
+; rdi = parent path, rdx = entry callback, ecx = ext2-only filter.
+vfs_visit_path:
+    push    r12
+    push    r13
+    push    rbp
+    mov     r12, rdx
+    mov     r13d, ecx
+    xor     esi, esi
+    call    resolve_path
+    test    rax, rax
+    jnz     .done
+    call    work_location
+    test    rax, rax
+    jz      .root
+    cmp     rax, RAM_MOUNT
+    je      .ram
+    mov     rbp, rax
+    mov     edi, edx
+    mov     rdx, r12
+    cmp     byte [rbp + mount_volume.type], FS_EXT2
+    je      .ext
+    test    r13d, r13d
+    jnz     .empty
+    call    fat_visit
+    jmp     .done
+.ext:
+    call    ext_visit
+    jmp     .done
+.root:
+    mov     edi, VISIT_ROOT
+    mov     eax, VISIT_EXT_ROOT
+    test    r13d, r13d
+    cmovnz  edi, eax
+    mov     rdx, r12
+    call    vfs_visit_mounts
+    jmp     .done
+.ram:
+    test    r13d, r13d
+    jnz     .empty
+    mov     rdx, r12
+    call    ramfs_visit
+    jmp     .done
+.empty:
+    xor     eax, eax
+.done:
+    pop     rbp
+    pop     r13
+    pop     r12
+    ret
+
 list_mounts:
+    mov     edi, VISIT_ROOT
+    lea     rdx, [rel print_mount_entry]
+    jmp     vfs_visit_mounts
+
+; edi = VISIT_* mode, rdx = callback(name, length, flags).
+vfs_visit_mounts:
     push    rbx
     push    r12
-    sub     rsp, 8
-    lea     rdi, [rel ram_path]
-    call    print_line
+    push    r13
+    mov     r12, rdx
+    mov     r13d, edi
+    cmp     r13d, VISIT_ROOT
+    jne     .mounts
+    lea     rdi, [rel ram_name]
+    mov     esi, 3
+    mov     edx, ENTRY_DIRECTORY
+    call    r12
+    test    rax, rax
+    jnz     .done
+.mounts:
     lea     rbx, [rel mounts]
-    mov     r12d, VOLUME_MOUNT_COUNT
 .next:
     cmp     byte [rbx + mount_volume.mounted], 0
     je      .advance
-    mov     edi, '/'
-    call    console_putc
+    cmp     r13d, VISIT_EXT_ROOT
+    je      .ext_filter
+    cmp     r13d, VISIT_FAT_MOUNTS
+    jne     .name
+    cmp     byte [rbx + mount_volume.type], FS_FAT32
+    jne     .advance
+    jmp     .name
+.ext_filter:
+    cmp     byte [rbx + mount_volume.type], FS_EXT2
+    jne     .advance
+.name:
     lea     rdi, [rbx + mount_volume.name]
-    call    print_line
+    xor     esi, esi
+.length:
+    cmp     byte [rdi + rsi], 0
+    je      .visit
+    inc     esi
+    jmp     .length
+.visit:
+    xor     edx, edx
+    cmp     r13d, VISIT_ROOT
+    je      .directory
+    cmp     r13d, VISIT_EXT_ROOT
+    jne     .emit
+.directory:
+    mov     edx, ENTRY_DIRECTORY
+.emit:
+    call    r12
+    test    rax, rax
+    jnz     .done
 .advance:
     add     rbx, mount_volume_size
-    dec     r12d
-    jnz     .next
-    add     rsp, 8
+    lea     rax, [rel mounts + VOLUME_MOUNT_COUNT * mount_volume_size]
+    cmp     rbx, rax
+    jb      .next
+    xor     eax, eax
+.done:
+    pop     r13
     pop     r12
     pop     rbx
+    ret
+
+print_mount_entry:
+    push    rdi
+    mov     edi, '/'
+    call    console_putc
+    pop     rdi
+    call    print_line
+    xor     eax, eax
     ret
 
 command_mount:
     cmp     byte [rdi], 0
     je      list_mounts
-    xor     edx, edx
-    cmp     word [rdi], '-t'
-    jne     .option
-    cmp     dword [rdi + 2], ' ext'
-    jne     mount_usage
-    cmp     word [rdi + 6], '2 '
-    jne     mount_usage
-    add     rdi, 8
-    mov     edx, FS_EXT2
+    mov     edx, FS_AUTO
 .option:
-    cmp     dword [rdi], '-o r'
+    cmp     word [rdi], '-t'
+    je      .type
+    cmp     word [rdi], '-o'
     jne     .device
-    cmp     word [rdi + 4], 'o '
+    test    dh, dh
+    jnz     mount_usage
+    cmp     byte [rdi + 2], ' '
     jne     mount_usage
-    add     rdi, 6
-    or      edx, 0x100
+    add     rdi, 2
+.ro_space:
+    inc     rdi
+    cmp     byte [rdi], ' '
+    je      .ro_space
+    cmp     word [rdi], 'ro'
+    jne     mount_usage
+    add     rdi, 2
+    mov     dh, 1
+    jmp     .option_end
+.type:
+    cmp     dl, FS_AUTO
+    jne     mount_usage
+    cmp     byte [rdi + 2], ' '
+    jne     mount_usage
+    add     rdi, 2
+.type_space:
+    inc     rdi
+    cmp     byte [rdi], ' '
+    je      .type_space
+    cmp     dword [rdi], 'ext2'
+    jne     .fat_type
+    mov     dl, FS_EXT2
+    add     rdi, 4
+    jmp     .option_end
+.fat_type:
+    cmp     dword [rdi], 'fat3'
+    jne     mount_usage
+    cmp     byte [rdi + 4], '2'
+    jne     mount_usage
+    mov     dl, FS_FAT32
+    add     rdi, 5
+.option_end:
+    cmp     byte [rdi], ' '
+    jne     mount_usage
+.option_space:
+    inc     rdi
+    cmp     byte [rdi], ' '
+    je      .option_space
+    jmp     .option
 .device:
     cmp     dword [rdi], 'disk'
     jne     mount_usage
@@ -706,6 +855,18 @@ command_mount:
     mov     al, [rsp + 1]
     mov     [rbp + mount_volume.read_only], al
     mov     rdi, r12
+    call    vfs_mount_partition
+    test    rax, rax
+    jnz     .error
+    cmp     byte [rbp + mount_volume.type], FS_AUTO
+    jne     .dispatch
+    mov     rdi, [rbp + mount_volume.volume_base]
+    mov     rsi, [rbp + mount_volume.partition_last]
+    call    disk_probe
+    cmp     eax, FS_UNKNOWN
+    jae     .probe_error
+    mov     [rbp + mount_volume.type], al
+.dispatch:
     cmp     byte [rbp + mount_volume.type], FS_EXT2
     je      .ext_mount
     call    fat_mount
@@ -726,6 +887,13 @@ command_mount:
     pop     r12
     pop     rbp
     ret
+.probe_error:
+    mov     r12d, eax
+    lea     rdi, [rel mount_detection]
+    call    console_write_cstr
+    lea     rax, [rel disk_probe_labels]
+    mov     rax, [rax + r12 * 8]
+    jmp     .error
 .usage:
     lea     rax, [rel mount_help]
     jmp     .error
@@ -934,7 +1102,8 @@ rm_help:        db "Usage: rm PATH", 10, 0
 touch_help:     db "Usage: touch PATH", 10, 0
 mkdir_help:     db "Usage: mkdir PATH", 10, 0
 mkdir_mount_required: db "mkdir requires a writable FAT32 or ext2 mount.", 10, 0
-mount_help:     db "Usage: mount [[-t ext2] [-o ro] diskNpM /NAME] or umount /NAME", 10, 0
+mount_help:     db "Usage: mount [[-t ext2|fat32] [-o ro] diskNpM /NAME] or umount /NAME", 10, 0
+mount_detection: db "Filesystem detection: ", 0
 mount_taken:    db "Mount point is already in use.", 10, 0
 mount_full:     db "No free volume mount slots.", 10, 0
 mount_in_use:   db "Current directory is on this volume. Change directory first.", 10, 0

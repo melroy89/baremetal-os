@@ -275,12 +275,17 @@ rw_invalid:
     ret
 
 rw_write_sector:
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
     cmp     rdi, [rbp + mount_volume.total_sectors]
     jae     rw_invalid
     add     rdi, [rbp + mount_volume.volume_base]
     mov     eax, [rbp + mount_volume.device]
     mov     [rel block_selected], eax
     jmp     block_write
+.done:
+    ret
 
 ; edi = clean bit. Update only the primary superblock.
 ext_set_state:
@@ -453,13 +458,8 @@ ext_create:
     test    rax, rax
     jnz     .error
 .grow:
-    call    rw_clear_parent_index
-    test    rax, rax
-    jnz     .write_error
-    call    rw_grow_directory
-    test    rax, rax
-    jnz     .write_error
-
+    ; First stage the payload in free blocks, including its pointer blocks.
+    ; Growth and bitmap changes begin only once cancellation is deferred.
     mov     [rel create_size], r13
     mov     [rel create_data], r12
     cmp     r15d, 2
@@ -467,6 +467,15 @@ ext_create:
     call    rw_make_directory
 .payload:
     call    rw_write_data
+    test    rax, rax
+    jnz     .stage_error
+    call    console_cancel_commit
+    test    rax, rax
+    jnz     .error
+    call    rw_clear_parent_index
+    test    rax, rax
+    jnz     .write_error
+    call    rw_grow_directory
     test    rax, rax
     jnz     .write_error
     call    rw_reserve_allocations
@@ -560,7 +569,10 @@ ext_create:
     mov     [rel create_data], r12
     call    rw_write_data
     test    rax, rax
-    jnz     .write_error
+    jnz     .stage_error
+    call    console_cancel_commit
+    test    rax, rax
+    jnz     .error
     call    rw_reserve_allocations
     test    rax, rax
     jnz     .write_error
@@ -601,6 +613,10 @@ ext_create:
 .occupied:
     lea     rax, [rel ext_exists]
     jmp     .error
+.stage_error:
+    lea     rdx, [rel interrupted_text]
+    cmp     rax, rdx
+    je      .error
 .write_error:
     mov     byte [rbp + mount_volume.write_error], 1
 .error:
@@ -1177,6 +1193,9 @@ rw_select_free:
     cmp     dword [rel create_total], 0
     je      .ok
 .group:
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
     mov     edi, ebx
     call    rw_load_group
     test    rax, rax
@@ -1217,6 +1236,12 @@ rw_select_free:
     lea     r13, [rel block_bitmap]
     xor     ecx, ecx
 .block_bit:
+    test    ecx, 255
+    jnz     .test_bit
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
+.test_bit:
     bt      dword [r13], ecx
     jc      .next_bit
     mov     eax, [rel group_start]

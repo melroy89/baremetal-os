@@ -96,6 +96,9 @@ ext_rename:
     movzx   eax, word [rbx + 4]
     cmp     eax, [rel create_rec_min]
     jb      .fit
+    call    console_cancel_commit
+    test    rax, rax
+    jnz     .done
     test    dword [rel dir_inode + ext_inode.flags], EXT_INDEX_FL
     jz      .rename
     call    rw_clear_parent_index
@@ -323,6 +326,9 @@ ext_move_general:
     call    rtc_unix_seconds
     jc      .clock_error
     mov     r15d, eax
+    call    console_cancel_commit
+    test    rax, rax
+    jnz     .done
     call    rw_clear_parent_index
     test    rax, rax
     jnz     .failed

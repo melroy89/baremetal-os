@@ -277,6 +277,9 @@ rw_sparse_pointer_tree:
     push    r14
     push    r15
     sub     rsp, 16
+    call    console_cancel_check
+    test    rax, rax
+    jnz     .done
     mov     ebx, edi
     mov     r12d, esi
     mov     [rsp], edx

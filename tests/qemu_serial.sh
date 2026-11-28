@@ -57,7 +57,7 @@ run_guest() (
         return
     fi
 
-    printf 'halt\r' >&"$serial_write"
+    printf '%s' "${QEMU_TEST_HALT_INPUT:-$'halt\r'}" >&"$serial_write"
     expect_serial $'Powering off\\.\\.\\.\r?\n'
     IFS= read -r -d '' -t 30 -u "$serial_read" remainder || status=$?
     transcript+=$remainder

@@ -62,6 +62,9 @@ fat_rename:
     lea     rsi, [rel name_buf]
     mov     ecx, 11
     rep     movsb
+    call    console_cancel_commit
+    test    rax, rax
+    jnz     .done
     mov     byte [rbp + mount_volume.pending_write], 1
     mov     rdi, r13
     call    write_sector
